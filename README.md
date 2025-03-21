@@ -61,35 +61,35 @@ When run without flags, the tool will guide you through the log extraction proce
 The tool supports various timestamp formats:
 
 - Standard date and time formats:
-  - YYYY-MM-DD HH:MM:SS (e.g., 2023-06-15 14:30:00)
-  - YYYY/MM/DD HH:MM:SS (e.g., 2023/06/15 14:30:00)
-  - YYYY/MM/DD HH:MM (e.g., 2023/06/15 14:30)
-  - DD/MM/YYYY HH:MM:SS (e.g., 15/06/2023 14:30:00)
-  - MM/DD/YYYY HH:MM:SS (e.g., 06/15/2023 14:30:00)
-  - ISO 8601: YYYY-MM-DDThh:mm:ss (e.g., 2023-06-15T14:30:00)
-  - YYYY-MM-DD HH:MM (e.g., 2023-06-15 14:30)
+  - `YYYY-MM-DD HH:MM:SS` (e.g., `2023-06-15 14:30:00`)
+  - `YYYY/MM/DD HH:MM:SS` (e.g., `2023/06/15 14:30:00`)
+  - `YYYY/MM/DD HH:MM` (e.g., `2023/06/15 14:30`)
+  - `DD/MM/YYYY HH:MM:SS` (e.g., `15/06/2023 14:30:00`)
+  - `MM/DD/YYYY HH:MM:SS` (e.g., `06/15/2023 14:30:00`)
+  - ISO 8601: `YYYY-MM-DDThh:mm:ss` (e.g., `2023-06-15T14:30:00`)
+  - `YYYY-MM-DD HH:MM` (e.g., `2023-06-15 14:30`)
 
 - Relative date formats:
-  - Now (current date and time)
-  - Today (defaults to noon today)
-  - Today at HH:MM:SS (e.g., Today at 14:30:00)
-  - Today at HH:MM (e.g., Today at 14:30)
-  - Today HH (e.g., Today 14)
-  - Yesterday (defaults to noon yesterday)
-  - Yesterday at HH:MM:SS (e.g., Yesterday at 14:30:00)
-  - Yesterday at HH:MM (e.g., Yesterday at 14:30)
-  - Yesterday HH (e.g., Yesterday 14)
+  - `Now` (current date and time)
+  - `Today` (defaults to noon today)
+  - `Today at HH:MM:SS` (e.g., `Today at 14:30:00`)
+  - `Today at HH:MM` (e.g., `Today at 14:30`)
+  - `Today HH` (e.g., `Today 14`)
+  - `Yesterday` (defaults to noon yesterday)
+  - `Yesterday at HH:MM:SS` (e.g., `Yesterday at 14:30:00`)
+  - `Yesterday at HH:MM` (e.g., `Yesterday at 14:30`)
+  - `Yesterday HH` (e.g., `Yesterday 14`)
 
 - Weekday formats:
-  - Monday/Tuesday/etc. (defaults to noon on the most recent occurrence of that day)
-  - Monday/Tuesday/etc. at HH:MM:SS (e.g., Monday at 14:30:00)
-  - Monday/Tuesday/etc. at HH:MM (e.g., Monday at 14:30)
+  - `Monday/Tuesday/etc.` (defaults to noon on the most recent occurrence of that day)
+  - `Monday/Tuesday/etc. at HH:MM:SS` (e.g., `Monday at 14:30:00`)
+  - `Monday/Tuesday/etc. at HH:MM` (e.g., `Monday at 14:30`)
 
 - Time-only formats (defaults to today):
-  - HH (e.g., 14, interpreted as today at 14:00:00)
-  - at HH (e.g., at 14, interpreted as today at 14:00:00)
+  - `HH` (e.g., `14`, interpreted as today at 14:00:00)
+  - `at HH` (e.g., `at 14`, interpreted as today at 14:00:00)
 
-All formats are automatically normalized to the standard YYYY-MM-DD HH:MM:SS format.
+All formats are automatically normalized to the standard `YYYY-MM-DD HH:MM:SS` format.
 
 ### Build and Install
 
