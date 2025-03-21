@@ -63,10 +63,11 @@ func SortByTimestamp(ctx context.Context, inputFile, outputFile string) (int, er
 			defer wg.Done()
 			for line := range jobs {
 				// Try to parse timestamp from the line
-				ts, err := timestamp.Parse(ctx, line)
+				ts, _ := timestamp.Parse(ctx, line)
 				results <- LogLine{
 					Timestamp: ts,
 					Content:   line,
+					Index:     0, // We don't need to track index for sorting
 				}
 			}
 		}()
