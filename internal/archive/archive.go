@@ -16,8 +16,8 @@ import (
 )
 
 // FetchArchived fetches archived logs for the specified app
-func FetchArchived(ctx context.Context, client *scalingo.Client, appName, outputDir, mainOutputFile string, targetTime time.Time, statusCh chan<- status.StatusMessage, hoursCount int, lineCount int) (int, map[string]int, error) {
-	status.UpdateStatus(statusCh, "fetching archived logs for "+appName)
+func FetchArchived(ctx context.Context, client *scalingo.Client, appName, outputDir, mainOutputFile string, targetTime time.Time, statusCh chan<- status.Message, hoursCount int, lineCount int) (int, map[string]int, error) {
+	status.Update(statusCh, "fetching archived logs for "+appName)
 
 	totalLines := 0
 	archiveDetails := make(map[string]int)
@@ -30,7 +30,7 @@ func FetchArchived(ctx context.Context, client *scalingo.Client, appName, output
 
 	// Check if there are no archives available
 	if len(archivesResp.Archives) == 0 {
-		status.UpdateStatus(statusCh, "no log archives available for this application")
+		status.Update(statusCh, "no log archives available for this application")
 		return 0, archiveDetails, nil
 	}
 
@@ -89,7 +89,7 @@ func FetchArchived(ctx context.Context, client *scalingo.Client, appName, output
 					targetTime.Format("2006-01-02 15:04:05"),
 					archive.FromTime.Format("2006-01-02 15:04:05"),
 					archive.ToTime.Format("2006-01-02 15:04:05"))
-				status.UpdateStatus(statusCh, statusMsg)
+				status.Update(statusCh, statusMsg)
 
 				// Don't break - we need to continue looking for adjacent archives
 				// that might be relevant for time range queries
@@ -131,7 +131,7 @@ func FetchArchived(ctx context.Context, client *scalingo.Client, appName, output
 					lineCount,
 					formatDuration(timeRange/2),
 					formatDuration(timeRange/2))
-				status.UpdateStatus(statusCh, estimationMsg)
+				status.Update(statusCh, estimationMsg)
 			} else {
 				// Default for when we just didn't find an exact match
 				timeRange = 24 * time.Hour
@@ -140,7 +140,7 @@ func FetchArchived(ctx context.Context, client *scalingo.Client, appName, output
 			rangeStartTime := targetTime.Add(-timeRange)
 			rangeEndTime := targetTime.Add(timeRange)
 
-			status.UpdateStatus(statusCh, fmt.Sprintf("searching for archives in time range: %s to %s",
+			status.Update(statusCh, fmt.Sprintf("searching for archives in time range: %s to %s",
 				rangeStartTime.Format("2006-01-02 15:04:05"),
 				rangeEndTime.Format("2006-01-02 15:04:05")))
 
@@ -181,7 +181,7 @@ func FetchArchived(ctx context.Context, client *scalingo.Client, appName, output
 						overlapType,
 						archive.FromTime.Format("2006-01-02 15:04:05"),
 						archive.ToTime.Format("2006-01-02 15:04:05"))
-					status.UpdateStatus(statusCh, statusMsg)
+					status.Update(statusCh, statusMsg)
 				}
 			}
 		}
@@ -226,19 +226,19 @@ func FetchArchived(ctx context.Context, client *scalingo.Client, appName, output
 
 					statusMsg := fmt.Sprintf("target time %s falls within a gap between archives",
 						targetTime.Format("2006-01-02 15:04:05"))
-					status.UpdateStatus(statusCh, statusMsg)
+					status.Update(statusCh, statusMsg)
 
 					beforeMsg := fmt.Sprintf("archive ending at: %s",
 						beforeArchive.ToTime.Format("2006-01-02 15:04:05"))
-					status.UpdateStatus(statusCh, beforeMsg)
+					status.Update(statusCh, beforeMsg)
 
 					afterMsg := fmt.Sprintf("next archive starts: %s",
 						afterArchive.FromTime.Format("2006-01-02 15:04:05"))
-					status.UpdateStatus(statusCh, afterMsg)
+					status.Update(statusCh, afterMsg)
 
 					gapMsg := fmt.Sprintf("gap duration: %s",
 						afterArchive.FromTime.Sub(beforeArchive.ToTime))
-					status.UpdateStatus(statusCh, gapMsg)
+					status.Update(statusCh, gapMsg)
 				}
 			} else if beforeArchive != nil {
 				// Only have archive before target
@@ -256,7 +256,7 @@ func FetchArchived(ctx context.Context, client *scalingo.Client, appName, output
 				return processedArchives[i].ToTime.After(processedArchives[j].ToTime)
 			})
 			relevantArchives = append(relevantArchives, processedArchives[0])
-			status.UpdateStatus(statusCh, "no target time specified, using most recent archive")
+			status.Update(statusCh, "no target time specified, using most recent archive")
 		}
 	}
 
@@ -270,9 +270,9 @@ func FetchArchived(ctx context.Context, client *scalingo.Client, appName, output
 
 		statusMsg := fmt.Sprintf("selected %d archives that may contain logs around the target time",
 			len(relevantArchives))
-		status.UpdateStatus(statusCh, statusMsg)
+		status.Update(statusCh, statusMsg)
 	} else {
-		status.UpdateStatus(statusCh, "no relevant archives found for the target time, using recent logs only")
+		status.Update(statusCh, "no relevant archives found for the target time, using recent logs only")
 		return 0, archiveDetails, nil
 	}
 
@@ -288,7 +288,7 @@ func FetchArchived(ctx context.Context, client *scalingo.Client, appName, output
 			i+1, len(relevantArchives),
 			archive.FromTime.Format("2006-01-02 15:04 MST"),
 			archive.ToTime.Format("2006-01-02 15:04 MST"))
-		status.UpdateStatus(statusCh, statusMsg)
+		status.Update(statusCh, statusMsg)
 
 		// Download the archive
 		if err := downloadArchive(ctx, client, archiveUrl, archiveFile); err != nil {
@@ -313,7 +313,7 @@ func FetchArchived(ctx context.Context, client *scalingo.Client, appName, output
 		// Processing message
 		processingMsg := fmt.Sprintf("processing archive %d/%dr %s",
 			i+1, len(relevantArchives), appName)
-		status.UpdateStatus(statusCh, processingMsg)
+		status.Update(statusCh, processingMsg)
 
 		// Append to main output file
 		if err := appendFiles(archiveFile, mainOutputFile); err != nil {

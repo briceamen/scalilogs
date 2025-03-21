@@ -97,7 +97,7 @@ func writeFilteredLogs(
 }
 
 // FilterByTimestamp filters log lines around a specific timestamp, keeping a certain number of lines before and after
-func FilterByTimestamp(ctx context.Context, inputFile, outputFile, targetTimestampStr string, lineCount int, appName string, statusCh chan<- status.StatusMessage) (int, error) {
+func FilterByTimestamp(ctx context.Context, inputFile, outputFile, targetTimestampStr string, lineCount int, appName string, statusCh chan<- status.Message) (int, error) {
 	// Parse target timestamp
 	targetTimestamp, err := timestamp.ParseSearch(ctx, targetTimestampStr)
 	if err != nil {
@@ -271,7 +271,7 @@ func FilterByTimestamp(ctx context.Context, inputFile, outputFile, targetTimesta
 }
 
 // FilterByHours filters log lines within a certain number of hours before and after a specific timestamp
-func FilterByHours(ctx context.Context, inputFile, outputFile, targetTimestampStr string, hoursCount int, appName string, statusCh chan<- status.StatusMessage) (int, error) {
+func FilterByHours(ctx context.Context, inputFile, outputFile, targetTimestampStr string, hoursCount int, appName string, statusCh chan<- status.Message) (int, error) {
 	// Parse target timestamp
 	targetTimestamp, err := timestamp.ParseSearch(ctx, targetTimestampStr)
 	if err != nil {

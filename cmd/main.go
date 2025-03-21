@@ -8,6 +8,7 @@ import (
 
 	"github.com/briceamen/scalilogs/internal/logs"
 	"github.com/briceamen/scalilogs/internal/status"
+	"github.com/briceamen/scalilogs/internal/tui"
 	"github.com/briceamen/scalilogs/internal/ui"
 	"github.com/briceamen/scalilogs/pkg/scalingo"
 )
@@ -15,7 +16,8 @@ import (
 func main() {
 	// Create a root context for the entire application
 	ctx := context.Background()
-	statusCh := make(chan status.StatusMessage)
+	// Create a channel to send status messages to the UI
+	statusCh := make(chan status.Message)
 
 	// Define command-line flags
 	var appNameFlag string
@@ -91,9 +93,9 @@ func main() {
 			os.Exit(1)
 		}
 
-		// Default to 100 lines if not specified and hours not specified
+		// Default to 1000 lines if not specified and hours not specified
 		if lineCount <= 0 && hours <= 0 {
-			lineCount = 100
+			lineCount = 1000
 		}
 
 		// Create the client with specified parameters
@@ -145,6 +147,6 @@ func main() {
 	}
 
 	// Print success message with file path
-	fmt.Println("✓ Extraction complete!")
+	fmt.Println(tui.SuccessStyle.Render("✓ Extraction complete!"))
 	fmt.Printf("Logs saved to: %s\n", outputFilePath)
 }

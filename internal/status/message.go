@@ -6,8 +6,8 @@ import (
 	"os"
 )
 
-// StatusMessage is used to update UI components with new status
-type StatusMessage struct {
+// Message is used to update UI components with new status
+type Message struct {
 	Status string
 	Value  int
 }
@@ -29,7 +29,7 @@ type FinishMessage struct {
 }
 
 // Update sends a status update to the channel
-func UpdateStatus(statusCh chan<- StatusMessage, status string, value ...int) {
+func Update(statusCh chan<- Message, status string, value ...int) {
 	if statusCh == nil {
 		return
 	}
@@ -40,7 +40,7 @@ func UpdateStatus(statusCh chan<- StatusMessage, status string, value ...int) {
 	}
 
 	select {
-	case statusCh <- StatusMessage{Status: status, Value: val}:
+	case statusCh <- Message{Status: status, Value: val}:
 		// Sent successfully
 	default:
 		// Do nothing

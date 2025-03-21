@@ -12,9 +12,9 @@ import (
 )
 
 // RunExtractor runs a Bubbletea-based UI for log extraction
-func RunExtractor(ctx context.Context, appName, targetTimestamp string, extractFunc func(chan status.StatusMessage, chan status.ErrorMessage, chan status.FinishMessage) error) error {
+func RunExtractor(ctx context.Context, appName, targetTimestamp string, extractFunc func(chan status.Message, chan status.ErrorMessage, chan status.FinishMessage) error) error {
 	// Create channels for communication
-	statusCh := make(chan status.StatusMessage)
+	statusCh := make(chan status.Message)
 	errorCh := make(chan status.ErrorMessage)
 	finishCh := make(chan status.FinishMessage)
 
@@ -27,11 +27,6 @@ func RunExtractor(ctx context.Context, appName, targetTimestamp string, extractF
 
 	// Create and initialize the Bubbletea model
 	model := NewModel(appName, targetTimestamp)
-	// Add the title as a progress entry
-	model.progressEntries = append(model.progressEntries, ProgressEntry{
-		Message: titleStyle.Render("Scalilogs"),
-		Value:   0,
-	})
 
 	p := tea.NewProgram(model)
 
