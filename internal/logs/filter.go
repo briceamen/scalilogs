@@ -215,8 +215,9 @@ func FilterByTimestamp(ctx context.Context, inputFile, outputFile, targetTimesta
 	}
 
 	// Handle the case where there's a large time jump
-	// If there's a gap larger than 30 minutes, don't include lines from across the gap
-	if hasLargeTimeJumps(logLines, startIndex, endIndex) {
+	// First try with normal tolerance
+	hasTimeGaps := hasLargeTimeJumps(logLines, startIndex, endIndex)
+	if hasTimeGaps {
 		// Recompute range with a more restrictive approach
 		startIndex = findNearbyIndex(logLines, closestIndex, lineCount, true)
 		endIndex = findNearbyIndex(logLines, closestIndex, lineCount, false)
@@ -228,6 +229,30 @@ func FilterByTimestamp(ctx context.Context, inputFile, outputFile, targetTimesta
 		// Skip lines with zero timestamps (unparseable)
 		if !logLines[i].Timestamp.IsZero() {
 			filteredLines = append(filteredLines, logLines[i])
+		}
+	}
+
+	// Fallback: If we have very few lines, try a more liberal approach
+	// This is useful when searching for "now" and there are few recent logs
+	if len(filteredLines) < 50 && targetTimestampStr == "now" {
+		status.Update(statusCh, "found few logs, expanding search criteria")
+		// Revert to original range calculation
+		startIndex = closestIndex - lineCount
+		if startIndex < 0 {
+			startIndex = 0
+		}
+		endIndex = closestIndex + lineCount
+		if endIndex >= len(logLines) {
+			endIndex = len(logLines) - 1
+		}
+
+		// Rebuild filtered lines with expanded criteria
+		filteredLines = make([]LogLine, 0, endIndex-startIndex+1)
+		for i := startIndex; i <= endIndex; i++ {
+			// Only skip completely unparseable lines
+			if !logLines[i].Timestamp.IsZero() {
+				filteredLines = append(filteredLines, logLines[i])
+			}
 		}
 	}
 
@@ -245,10 +270,17 @@ func FilterByTimestamp(ctx context.Context, inputFile, outputFile, targetTimesta
 		fmt.Fprintf(w, "# Showing %d lines before and after\n", lineCount)
 
 		// Add warnings about time gaps
-		if hasLargeTimeJumps(logLines, startIndex, endIndex) {
+		if hasTimeGaps {
 			fmt.Fprintf(w, "# WARNING: Large time gaps detected in the logs.\n")
 			fmt.Fprintf(w, "# This may indicate gaps in the log coverage, possibly due to archive boundaries.\n")
 		}
+
+		// Add info about expanded search for 'now' with few results
+		if len(filteredLines) < 50 && targetTimestampStr == "now" {
+			fmt.Fprintf(w, "# NOTE: Few logs found near current time; search criteria were expanded.\n")
+			fmt.Fprintf(w, "# Consider using a more specific timestamp or increasing the time window.\n")
+		}
+
 		return nil
 	}
 
@@ -465,9 +497,10 @@ func absDuration(d time.Duration) time.Duration {
 	return d
 }
 
-// hasLargeTimeJumps checks if there are gaps larger than 30 minutes in the log timeline
+// hasLargeTimeJumps checks if there are gaps larger than the defined threshold in the log timeline
 func hasLargeTimeJumps(logLines []LogLine, startIndex, endIndex int) bool {
-	const maxTimeGap = 30 * time.Minute
+	// More lenient gap threshold: 1 hour instead of 30 minutes
+	const maxTimeGap = 1 * time.Hour
 
 	// Can't have large jumps if we don't have enough lines
 	if endIndex-startIndex < 3 {
@@ -500,7 +533,8 @@ func hasLargeTimeJumps(logLines []LogLine, startIndex, endIndex int) bool {
 
 // findNearbyIndex finds a closer index based on time proximity to avoid large time jumps
 func findNearbyIndex(logLines []LogLine, closestIndex, lineCount int, lookBefore bool) int {
-	const maxTimeGap = 30 * time.Minute
+	// More lenient gap threshold: 1 hour instead of 30 minutes
+	const maxTimeGap = 1 * time.Hour
 
 	if closestIndex < 0 || closestIndex >= len(logLines) {
 		return closestIndex
@@ -525,12 +559,14 @@ func findNearbyIndex(logLines []LogLine, closestIndex, lineCount int, lookBefore
 		direction = 1
 	}
 
+	// Try to get as many lines as possible, even if there are some time gaps
 	for count < lineCount && index >= 0 && index < len(logLines) {
-		// Only count lines with valid timestamps within reasonable time range
+		// Only count lines with valid timestamps
 		if !logLines[index].Timestamp.IsZero() {
+			// Still check for absolutely huge time gaps (more than an hour)
 			timeDiff := absDuration(logLines[index].Timestamp.Sub(baseTime))
-			if timeDiff > maxTimeGap {
-				// Stop if we hit a large time gap
+			if timeDiff > 3*maxTimeGap { // Be even more lenient with the maximum gap
+				// Stop if we hit a really large time gap
 				break
 			}
 			count++
