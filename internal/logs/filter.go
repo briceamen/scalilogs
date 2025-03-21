@@ -268,19 +268,6 @@ func FilterByTimestamp(ctx context.Context, inputFile, outputFile, targetTimesta
 	// Define additional header information specific to FilterByTimestamp
 	additionalHeaderInfo := func(w *bufio.Writer) error {
 		fmt.Fprintf(w, "# Showing %d lines before and after\n", lineCount)
-
-		// Add warnings about time gaps
-		if hasTimeGaps {
-			fmt.Fprintf(w, "# WARNING: Large time gaps detected in the logs.\n")
-			fmt.Fprintf(w, "# This may indicate gaps in the log coverage, possibly due to archive boundaries.\n")
-		}
-
-		// Add info about expanded search for 'now' with few results
-		if len(filteredLines) < 50 && targetTimestampStr == "now" {
-			fmt.Fprintf(w, "# NOTE: Few logs found near current time; search criteria were expanded.\n")
-			fmt.Fprintf(w, "# Consider using a more specific timestamp or increasing the time window.\n")
-		}
-
 		return nil
 	}
 
@@ -448,25 +435,6 @@ func FilterByHours(ctx context.Context, inputFile, outputFile, targetTimestampSt
 			displayStartTime.Format("2006-01-02 15:04:05"),
 			displayEndTime.Format("2006-01-02 15:04:05"))
 		fmt.Fprintf(w, "# Hours before and after: %d\n", hoursCount)
-
-		// Check for logs before and after target time
-		var hasLogsBeforeTarget, hasLogsAfterTarget bool
-		for _, logLine := range filteredLines {
-			if logLine.Timestamp.Before(targetTimestamp) {
-				hasLogsBeforeTarget = true
-			}
-			if logLine.Timestamp.After(targetTimestamp) {
-				hasLogsAfterTarget = true
-			}
-		}
-
-		if !hasLogsBeforeTarget {
-			fmt.Fprintf(w, "# WARNING: No logs found before the target timestamp. This may indicate missing data.\n")
-		}
-
-		if !hasLogsAfterTarget {
-			fmt.Fprintf(w, "# WARNING: No logs found after the target timestamp. This may indicate missing data.\n")
-		}
 
 		return nil
 	}
