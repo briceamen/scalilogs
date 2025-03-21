@@ -71,6 +71,10 @@ func (s *Spinner) Stop() {
 	close(s.stopChan)
 	<-s.doneChan
 	s.active = false
+
+	// Create new channels for next start
+	s.stopChan = make(chan struct{})
+	s.doneChan = make(chan struct{})
 }
 
 // Update changes the spinner message

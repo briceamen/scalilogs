@@ -2,28 +2,36 @@ package logs
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"sort"
 	"time"
 
+	"github.com/Scalingo/go-utils/errors/v2"
 	"github.com/briceamen/logaround/internal/timestamp"
 )
 
-// FilterByTimestamp filters log lines around a specific timestamp
-func FilterByTimestamp(inputFile, outputFile, targetTimestampStr string, lineCount int, appName string) error {
+// LogLine represents a single log line with its timestamp
+type LogLine struct {
+	Timestamp time.Time
+	Content   string
+}
+
+// FilterByTimestamp filters log lines around a specific timestamp, keeping a certain number of lines before and after
+func FilterByTimestamp(ctx context.Context, inputFile, outputFile, targetTimestampStr string, lineCount int, appName string) (int, error) {
 	fmt.Printf("Filtering logs around timestamp: %s (±%d lines)...\n", targetTimestampStr, lineCount)
 
 	// Parse target timestamp
-	targetTimestamp, err := timestamp.ParseSearch(targetTimestampStr)
+	targetTimestamp, err := timestamp.ParseSearch(ctx, targetTimestampStr)
 	if err != nil {
-		return fmt.Errorf("parse target timestamp: %w", err)
+		return 0, errors.Wrap(ctx, err, "parse target timestamp")
 	}
 
 	// Read all log lines
 	file, err := os.Open(inputFile)
 	if err != nil {
-		return fmt.Errorf("open input file for filtering: %w", err)
+		return 0, errors.Wrap(ctx, err, "open input file for filtering")
 	}
 	defer file.Close()
 
@@ -37,7 +45,7 @@ func FilterByTimestamp(inputFile, outputFile, targetTimestampStr string, lineCou
 	// First pass: read all lines and find the closest timestamp
 	for scanner.Scan() {
 		line := scanner.Text()
-		ts, err := timestamp.Parse(line)
+		ts, err := timestamp.Parse(ctx, line)
 
 		// If we can parse a timestamp, check if it's closer to our target
 		if err == nil {
@@ -61,15 +69,15 @@ func FilterByTimestamp(inputFile, outputFile, targetTimestampStr string, lineCou
 	}
 
 	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("read input file for filtering: %w", err)
+		return 0, errors.Wrap(ctx, err, "read input file for filtering")
 	}
 
 	if closestIndex == -1 {
-		return fmt.Errorf("could not find any log lines with timestamps")
+		return 0, errors.New(ctx, "could not find any log lines with timestamps")
 	}
 
 	if len(logLines) == 0 {
-		return fmt.Errorf("no log lines were read from the input file")
+		return 0, errors.New(ctx, "no log lines were read from the input file")
 	}
 
 	// Determine range to extract
@@ -86,7 +94,7 @@ func FilterByTimestamp(inputFile, outputFile, targetTimestampStr string, lineCou
 	// Write filtered lines to output file
 	outFile, err := os.Create(outputFile)
 	if err != nil {
-		return fmt.Errorf("create filtered output file: %w", err)
+		return 0, errors.Wrap(ctx, err, "create filtered output file")
 	}
 	defer outFile.Close()
 
@@ -139,26 +147,26 @@ func FilterByTimestamp(inputFile, outputFile, targetTimestampStr string, lineCou
 	}
 
 	if err := writer.Flush(); err != nil {
-		return fmt.Errorf("flush filtered output file: %w", err)
+		return 0, errors.Wrap(ctx, err, "flush filtered output file")
 	}
 
 	fmt.Printf("Found closest timestamp at %s (difference: %s)\n",
 		logLines[closestIndex].Timestamp.Format("2006-01-02 15:04:05"),
 		closestTimeDiff)
-	fmt.Printf("Extracted %d lines around the target time\n", endIndex-startIndex+1)
+	fmt.Printf("Extracted %d lines around the target time\n\n", endIndex-startIndex+1)
 
-	return nil
+	return endIndex - startIndex + 1, nil
 }
 
 // FilterByHours filters log lines within a specific time range around a timestamp
-func FilterByHours(inputFile, outputFile, targetTimestampStr string, hoursCount int, appName string) error {
+func FilterByHours(ctx context.Context, inputFile, outputFile, targetTimestampStr string, hoursCount int, appName string) (int, error) {
 	// This print statement is now handled by the caller in extract.go
 	// fmt.Printf("Filtering logs around timestamp: %s (±%d hours)...\n", targetTimestampStr, hoursCount)
 
 	// Parse target timestamp
-	targetTimestamp, err := timestamp.ParseSearch(targetTimestampStr)
+	targetTimestamp, err := timestamp.ParseSearch(ctx, targetTimestampStr)
 	if err != nil {
-		return fmt.Errorf("parse target timestamp: %w", err)
+		return 0, errors.Wrap(ctx, err, "parse target timestamp")
 	}
 
 	// Calculate time boundaries
@@ -168,7 +176,7 @@ func FilterByHours(inputFile, outputFile, targetTimestampStr string, hoursCount 
 	// Read all log lines
 	file, err := os.Open(inputFile)
 	if err != nil {
-		return fmt.Errorf("open input file for filtering: %w", err)
+		return 0, errors.Wrap(ctx, err, "open input file for filtering")
 	}
 	defer file.Close()
 
@@ -183,7 +191,7 @@ func FilterByHours(inputFile, outputFile, targetTimestampStr string, hoursCount 
 	// Read all lines and filter by time range
 	for scanner.Scan() {
 		line := scanner.Text()
-		ts, err := timestamp.Parse(line)
+		ts, err := timestamp.Parse(ctx, line)
 		totalLogLines++
 
 		// Skip lines without valid timestamps
@@ -216,17 +224,17 @@ func FilterByHours(inputFile, outputFile, targetTimestampStr string, hoursCount 
 	}
 
 	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("read input file for filtering: %w", err)
+		return 0, errors.Wrap(ctx, err, "read input file for filtering")
 	}
 
 	if len(filteredLogLines) == 0 {
-		return fmt.Errorf("could not find any log entries within specified time range")
+		return 0, errors.New(ctx, "could not find any log entries within specified time range")
 	}
 
 	// Write filtered lines to output file
 	outFile, err := os.Create(outputFile)
 	if err != nil {
-		return fmt.Errorf("create filtered output file: %w", err)
+		return 0, errors.Wrap(ctx, err, "create filtered output file")
 	}
 	defer outFile.Close()
 
@@ -373,16 +381,16 @@ func FilterByHours(inputFile, outputFile, targetTimestampStr string, hoursCount 
 	}
 
 	if err := writer.Flush(); err != nil {
-		return fmt.Errorf("flush filtered output file: %w", err)
+		return 0, errors.Wrap(ctx, err, "flush filtered output file")
 	}
 
 	fmt.Printf("Found closest timestamp at %s (difference: %s)\n",
 		filteredLogLines[closestIndex].Timestamp.Format("2006-01-02 15:04:05"),
 		closestTimeDiff)
-	fmt.Printf("Extracted %d logs within ±%d hours of the target time\n",
+	fmt.Printf("Extracted %d logs within ±%d hours of the target time\n\n",
 		len(filteredLogLines), hoursCount)
 
-	return nil
+	return len(filteredLogLines), nil
 }
 
 // Check if there are large time jumps between consecutive log entries

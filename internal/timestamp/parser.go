@@ -1,11 +1,14 @@
 package timestamp
 
 import (
+	"context"
 	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Scalingo/go-utils/errors/v2"
 )
 
 const (
@@ -16,10 +19,10 @@ const (
 
 // ValidateAndNormalize validates and normalizes various timestamp formats
 // Returns a normalized timestamp in the format "YYYY-MM-DD HH:MM:SS"
-func ValidateAndNormalize(input string) (string, error) {
+func ValidateAndNormalize(ctx context.Context, input string) (string, error) {
 	// Early return for empty input
 	if strings.TrimSpace(input) == "" {
-		return "", fmt.Errorf("validate timestamp: timestamp cannot be empty")
+		return "", errors.New(ctx, "timestamp cannot be empty")
 	}
 
 	input = strings.TrimSpace(input)
@@ -35,7 +38,7 @@ func ValidateAndNormalize(input string) (string, error) {
 	if matches := todayRegex.FindStringSubmatch(lowercaseInput); len(matches) > 1 {
 		timeStr := matches[1]
 		if !isValidTimeFormat(timeStr) {
-			return "", fmt.Errorf("validate time format: invalid time format '%s', please use HH:MM:SS or HH:MM", timeStr)
+			return "", errors.New(ctx, fmt.Sprintf("invalid time format '%s', please use HH:MM:SS or HH:MM", timeStr))
 		}
 		today := time.Now().Format(dateFormat)
 		return fmt.Sprintf("%s %s", today, normalizeTimeFormat(timeStr)), nil
@@ -46,7 +49,7 @@ func ValidateAndNormalize(input string) (string, error) {
 	if matches := yesterdayRegex.FindStringSubmatch(lowercaseInput); len(matches) > 1 {
 		timeStr := matches[1]
 		if !isValidTimeFormat(timeStr) {
-			return "", fmt.Errorf("validate time format: invalid time format '%s', please use HH:MM:SS or HH:MM", timeStr)
+			return "", errors.New(ctx, fmt.Sprintf("invalid time format '%s', please use HH:MM:SS or HH:MM", timeStr))
 		}
 		yesterday := time.Now().AddDate(0, 0, -1).Format(dateFormat)
 		return fmt.Sprintf("%s %s", yesterday, normalizeTimeFormat(timeStr)), nil
@@ -59,7 +62,7 @@ func ValidateAndNormalize(input string) (string, error) {
 		timeStr := matches[2]
 
 		if !isValidTimeFormat(timeStr) {
-			return "", fmt.Errorf("validate time format: invalid time format '%s', please use HH:MM:SS or HH:MM", timeStr)
+			return "", errors.New(ctx, fmt.Sprintf("invalid time format '%s', please use HH:MM:SS or HH:MM", timeStr))
 		}
 
 		// Find the date for the most recent occurrence of this weekday
@@ -160,43 +163,164 @@ func ValidateAndNormalize(input string) (string, error) {
 	}
 
 	// If we get here, the format wasn't recognized
-	return "", fmt.Errorf("parse timestamp: unrecognized timestamp format: %s", input)
+	return "", errors.New(ctx, fmt.Sprintf("unrecognized timestamp format: %s", input))
 }
 
 // Parse parses a timestamp from a log line
-func Parse(line string) (time.Time, error) {
-	// Try to extract timestamp in format "2025-03-18 12:32:19.860718558 +0100 CET"
-	parts := strings.SplitN(line, " ", 4)
-	if len(parts) < 3 {
-		return time.Time{}, fmt.Errorf("parse log line: timestamp not found in log line")
+func Parse(ctx context.Context, line string) (time.Time, error) {
+	// Common formats to try
+	formats := []struct {
+		regex   *regexp.Regexp
+		format  string
+		extract func([]string) string
+	}{
+		// Standard Scalingo format: "2025-03-18 12:32:19.860718558 +0100 CET"
+		{
+			regex:  regexp.MustCompile(`^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+ [+-]\d{4} \w+)`),
+			format: "2006-01-02 15:04:05.999999999 -0700 MST",
+			extract: func(matches []string) string {
+				return matches[1]
+			},
+		},
+		// Format without timezone: "2025-03-18 12:32:19.860718558"
+		{
+			regex:  regexp.MustCompile(`^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+)`),
+			format: "2006-01-02 15:04:05.999999999",
+			extract: func(matches []string) string {
+				return matches[1]
+			},
+		},
+		// ISO8601 format: "2025-03-18T12:32:19Z"
+		{
+			regex:  regexp.MustCompile(`(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)`),
+			format: "2006-01-02T15:04:05Z",
+			extract: func(matches []string) string {
+				return matches[1]
+			},
+		},
+		// Standard date-time format: "2025-03-18 12:32:19"
+		{
+			regex:  regexp.MustCompile(`(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})`),
+			format: "2006-01-02 15:04:05",
+			extract: func(matches []string) string {
+				return matches[1]
+			},
+		},
+		// Log format with bracketed timestamp: "[2025-03-18 12:32:19]"
+		{
+			regex:  regexp.MustCompile(`\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]`),
+			format: "2006-01-02 15:04:05",
+			extract: func(matches []string) string {
+				return matches[1]
+			},
+		},
+		// Scalingo log format with app name: "2025-03-18 12:32:19.123456 app[web.1]:"
+		{
+			regex:  regexp.MustCompile(`^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+) app\[\w+\.\d+\]:`),
+			format: "2006-01-02 15:04:05.999999",
+			extract: func(matches []string) string {
+				return matches[1]
+			},
+		},
+		// RFC3339 format: "2025-03-18T12:32:19+01:00"
+		{
+			regex:  regexp.MustCompile(`(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2})`),
+			format: time.RFC3339,
+			extract: func(matches []string) string {
+				return matches[1]
+			},
+		},
 	}
 
-	dateStr := parts[0]
-	timeStr := parts[1]
-
-	// Check if it looks like a date
-	if !strings.HasPrefix(dateStr, "20") || len(dateStr) != 10 {
-		return time.Time{}, fmt.Errorf("validate date: invalid date format")
-	}
-
-	// Parse timestamp
-	timestamp, err := time.Parse("2006-01-02 15:04:05.999999999 -0700 MST",
-		fmt.Sprintf("%s %s %s", dateStr, timeStr, parts[2]))
-	if err != nil {
-		// Try alternative format
-		timestamp, err = time.Parse("2006-01-02 15:04:05.999999999",
-			fmt.Sprintf("%s %s", dateStr, timeStr))
-		if err != nil {
-			return time.Time{}, fmt.Errorf("parse timestamp: %w", err)
+	// Try each format
+	for _, f := range formats {
+		matches := f.regex.FindStringSubmatch(line)
+		if len(matches) > 0 {
+			timestamp, err := time.Parse(f.format, f.extract(matches))
+			if err == nil {
+				return timestamp, nil
+			}
 		}
 	}
 
-	return timestamp, nil
+	// If all standard formats fail, do a more exhaustive search
+	// This can be slower but handles more complex log formats
+	dateRegex := regexp.MustCompile(`\b(\d{4}-\d{2}-\d{2})[T\s](\d{2}:\d{2}:\d{2})(.\d+)?([+-]\d{2}:?\d{2}|Z)?`)
+	matches := dateRegex.FindStringSubmatch(line)
+	if len(matches) > 1 {
+		dateStr := matches[1]
+		timeStr := matches[2]
+
+		// Start with basic ISO format
+		timestampStr := fmt.Sprintf("%sT%s", dateStr, timeStr)
+
+		// Add fractional seconds if present
+		if len(matches) > 3 && matches[3] != "" {
+			timestampStr += matches[3]
+		}
+
+		// Add timezone if present
+		if len(matches) > 4 && matches[4] != "" {
+			timestampStr += matches[4]
+		} else {
+			timestampStr += "Z" // Default to UTC if no timezone
+		}
+
+		// Try to parse with RFC3339 first
+		timestamp, err := time.Parse(time.RFC3339, timestampStr)
+		if err == nil {
+			return timestamp, nil
+		}
+
+		// Try other common formats
+		for _, format := range []string{
+			"2006-01-02T15:04:05Z",
+			"2006-01-02T15:04:05.999Z",
+			"2006-01-02T15:04:05-07:00",
+			"2006-01-02 15:04:05",
+		} {
+			if t, err := time.Parse(format, timestampStr); err == nil {
+				return t, nil
+			}
+		}
+	}
+
+	// Last resort fallback - try to extract date and time fields separately
+	isDate := func(s string) bool {
+		_, err := time.Parse("2006-01-02", s)
+		return err == nil
+	}
+
+	isTime := func(s string) bool {
+		_, err := time.Parse("15:04:05", s)
+		return err == nil
+	}
+
+	var dateStr, timeStr string
+	words := strings.Fields(line)
+	for _, word := range words {
+		word = strings.Trim(word, "[](){},;:\"'")
+		if isDate(word) {
+			dateStr = word
+		} else if isTime(word) {
+			timeStr = word
+		}
+	}
+
+	if dateStr != "" && timeStr != "" {
+		timestampStr := fmt.Sprintf("%s %s", dateStr, timeStr)
+		timestamp, err := time.Parse("2006-01-02 15:04:05", timestampStr)
+		if err == nil {
+			return timestamp, nil
+		}
+	}
+
+	return time.Time{}, errors.New(ctx, "timestamp not found in log line")
 }
 
 // ParseSearch parses a timestamp from a search query
-func ParseSearch(timestampStr string) (time.Time, error) {
-	normalized, err := ValidateAndNormalize(timestampStr)
+func ParseSearch(ctx context.Context, timestampStr string) (time.Time, error) {
+	normalized, err := ValidateAndNormalize(ctx, timestampStr)
 	if err != nil {
 		return time.Time{}, err
 	}
