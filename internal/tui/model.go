@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/briceamen/scalilogs/internal/status"
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -34,28 +35,6 @@ var (
 	summaryContentStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("#FFFFFF"))
 )
-
-// StatusMessage is used to update the model with new status
-type StatusMessage struct {
-	Status string
-	Value  int
-}
-
-// ErrorMessage is used to report errors
-type ErrorMessage struct {
-	Error error
-}
-
-// FinishMessage is sent when processing is complete
-type FinishMessage struct {
-	OutputFile        string
-	LiveLogsCount     int
-	ArchiveLogsCount  int
-	TotalLines        int
-	FilteredLineCount int
-	ArchiveDetails    map[string]int
-	ElapsedTime       string
-}
 
 // ProgressEntry represents a line in the progress log
 type ProgressEntry struct {
@@ -115,7 +94,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case StatusMessage:
+	case status.StatusMessage:
 		m.status = msg.Status
 
 		// Store progress details for display in View
@@ -143,7 +122,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		return m, m.spinner.Tick
 
-	case FinishMessage:
+	case status.ErrorMessage:
+		m.error = msg.Error
+		return m, tea.Quit
+
+	case status.FinishMessage:
 		m.isFinished = true
 		m.outputFile = msg.OutputFile
 		m.liveLogsCount = msg.LiveLogsCount
@@ -175,10 +158,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.summary = append(m.summary, fmt.Sprintf("- Total processing time: %s", m.elapsedTime))
 		m.summary = append(m.summary, "------------------------")
 
-		return m, tea.Quit
-
-	case ErrorMessage:
-		m.error = msg.Error
 		return m, tea.Quit
 
 	default:

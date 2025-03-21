@@ -187,6 +187,22 @@ func Parse(ctx context.Context, line string) (time.Time, error) {
 				return matches[1]
 			},
 		},
+		// Router format with epoch timestamp: "2025-02-28 07:41:00.432084040 +0100 CET [router] method=POST"
+		{
+			regex:  regexp.MustCompile(`^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+ [+-]\d{4} \w+) \[router\]`),
+			format: "2006-01-02 15:04:05.999999999 -0700 MST",
+			extract: func(matches []string) string {
+				return matches[1]
+			},
+		},
+		// Scalingo router format with embedded JSON time: "time":"2025-02-28T13:00:01.690+00:00"
+		{
+			regex:  regexp.MustCompile(`"time":"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+[+-]\d{2}:\d{2})"`),
+			format: "2006-01-02T15:04:05.999999999-07:00",
+			extract: func(matches []string) string {
+				return matches[1]
+			},
+		},
 		// Format without timezone: "2025-03-18 12:32:19.860718558"
 		{
 			regex:  regexp.MustCompile(`^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+)`),
@@ -248,49 +264,7 @@ func Parse(ctx context.Context, line string) (time.Time, error) {
 		}
 	}
 
-	// If all standard formats fail, do a more exhaustive search
-	// This can be slower but handles more complex log formats
-	dateRegex := regexp.MustCompile(`\b(\d{4}-\d{2}-\d{2})[T\s](\d{2}:\d{2}:\d{2})(.\d+)?([+-]\d{2}:?\d{2}|Z)?`)
-	matches := dateRegex.FindStringSubmatch(line)
-	if len(matches) > 1 {
-		dateStr := matches[1]
-		timeStr := matches[2]
-
-		// Start with basic ISO format
-		timestampStr := fmt.Sprintf("%sT%s", dateStr, timeStr)
-
-		// Add fractional seconds if present
-		if len(matches) > 3 && matches[3] != "" {
-			timestampStr += matches[3]
-		}
-
-		// Add timezone if present
-		if len(matches) > 4 && matches[4] != "" {
-			timestampStr += matches[4]
-		} else {
-			timestampStr += "Z" // Default to UTC if no timezone
-		}
-
-		// Try to parse with RFC3339 first
-		timestamp, err := time.Parse(time.RFC3339, timestampStr)
-		if err == nil {
-			return timestamp, nil
-		}
-
-		// Try other common formats
-		for _, format := range []string{
-			"2006-01-02T15:04:05Z",
-			"2006-01-02T15:04:05.999Z",
-			"2006-01-02T15:04:05-07:00",
-			"2006-01-02 15:04:05",
-		} {
-			if t, err := time.Parse(format, timestampStr); err == nil {
-				return t, nil
-			}
-		}
-	}
-
-	// Last resort fallback - try to extract date and time fields separately
+	// Try to extract date and time components separately if standard formats fail
 	isDate := func(s string) bool {
 		_, err := time.Parse("2006-01-02", s)
 		return err == nil
@@ -330,5 +304,28 @@ func ParseSearch(ctx context.Context, timestampStr string) (time.Time, error) {
 		return time.Time{}, err
 	}
 
-	return time.Parse(dateTimeFormat, normalized)
+	// Parse the normalized timestamp
+	t, err := time.Parse(dateTimeFormat, normalized)
+	if err != nil {
+		return time.Time{}, errors.Wrap(ctx, err, "parse normalized timestamp")
+	}
+
+	// If no timezone was specified in the input, explicitly set it to Europe/Paris
+	if normalized == t.Format(dateTimeFormat) {
+		// Load Europe/Paris location
+		loc, err := time.LoadLocation("Europe/Paris")
+		if err != nil {
+			// Fallback to local timezone if location loading fails
+			t = t.In(time.Local)
+		} else {
+			// Set the timezone to Europe/Paris
+			t = time.Date(
+				t.Year(), t.Month(), t.Day(),
+				t.Hour(), t.Minute(), t.Second(), t.Nanosecond(),
+				loc,
+			)
+		}
+	}
+
+	return t, nil
 }

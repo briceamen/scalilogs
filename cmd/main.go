@@ -7,7 +7,7 @@ import (
 	"os"
 
 	"github.com/briceamen/scalilogs/internal/logs"
-	"github.com/briceamen/scalilogs/internal/tui"
+	"github.com/briceamen/scalilogs/internal/status"
 	"github.com/briceamen/scalilogs/internal/ui"
 	"github.com/briceamen/scalilogs/pkg/scalingo"
 )
@@ -15,7 +15,7 @@ import (
 func main() {
 	// Create a root context for the entire application
 	ctx := context.Background()
-	statusCh := make(chan tui.StatusMessage)
+	statusCh := make(chan status.StatusMessage)
 
 	// Define command-line flags
 	var appNameFlag string

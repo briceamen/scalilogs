@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Scalingo/go-utils/errors/v2"
 	"github.com/briceamen/scalilogs/internal/timestamp"
@@ -50,7 +51,7 @@ func SortByTimestamp(ctx context.Context, inputFile, outputFile string) (int, er
 	jobs := make(chan string, lineCount)
 	results := make(chan LogLine, lineCount)
 
-	// Create worker pool
+	// Launch workers
 	var wg sync.WaitGroup
 	wg.Add(numWorkers)
 
@@ -60,7 +61,19 @@ func SortByTimestamp(ctx context.Context, inputFile, outputFile string) (int, er
 			defer wg.Done()
 			for line := range jobs {
 				// Try to parse timestamp from the line
-				ts, _ := timestamp.Parse(ctx, line)
+				ts, err := timestamp.Parse(ctx, line)
+				if err != nil {
+					// Debug log the error but continue with a zero timestamp
+					// For troubleshooting, you can uncomment the next line
+					// fmt.Printf("Failed to parse timestamp from line: %s\nError: %v\n", line, err)
+					ts = time.Time{}
+				}
+
+				// Normalize timestamp to UTC to ensure consistent sorting
+				if !ts.IsZero() {
+					ts = ts.UTC()
+				}
+
 				results <- LogLine{
 					Timestamp: ts,
 					Content:   line,
@@ -92,6 +105,18 @@ func SortByTimestamp(ctx context.Context, inputFile, outputFile string) (int, er
 
 	// Sort log lines by timestamp (newest first)
 	sort.Slice(logLines, func(i, j int) bool {
+		// Handle case where one or both timestamps are zero
+		if logLines[i].Timestamp.IsZero() && !logLines[j].Timestamp.IsZero() {
+			return false // Zero timestamp sorts after non-zero
+		}
+		if !logLines[i].Timestamp.IsZero() && logLines[j].Timestamp.IsZero() {
+			return true // Non-zero timestamp sorts before zero
+		}
+
+		// If timestamps are equal, preserve original order
+		if logLines[i].Timestamp.Equal(logLines[j].Timestamp) {
+			return i < j
+		}
 		return logLines[i].Timestamp.After(logLines[j].Timestamp)
 	})
 

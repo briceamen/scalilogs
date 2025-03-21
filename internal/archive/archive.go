@@ -11,13 +11,13 @@ import (
 	"time"
 
 	"github.com/Scalingo/go-utils/errors/v2"
-	"github.com/briceamen/scalilogs/internal/tui"
+	"github.com/briceamen/scalilogs/internal/status"
 	"github.com/briceamen/scalilogs/pkg/scalingo"
 )
 
 // FetchArchived fetches archived logs for the specified app
-func FetchArchived(ctx context.Context, client *scalingo.Client, appName, outputDir, mainOutputFile string, targetTime time.Time, statusCh chan<- tui.StatusMessage) (int, map[string]int, error) {
-	tui.UpdateStatus(statusCh, "fetching archived logs for "+appName)
+func FetchArchived(ctx context.Context, client *scalingo.Client, appName, outputDir, mainOutputFile string, targetTime time.Time, statusCh chan<- status.StatusMessage, hoursCount int, lineCount int) (int, map[string]int, error) {
+	status.UpdateStatus(statusCh, "fetching archived logs for "+appName)
 
 	totalLines := 0
 	archiveDetails := make(map[string]int)
@@ -30,7 +30,7 @@ func FetchArchived(ctx context.Context, client *scalingo.Client, appName, output
 
 	// Check if there are no archives available
 	if len(archivesResp.Archives) == 0 {
-		tui.UpdateStatus(statusCh, "no log archives available for this application")
+		status.UpdateStatus(statusCh, "no log archives available for this application")
 		return 0, archiveDetails, nil
 	}
 
@@ -74,27 +74,120 @@ func FetchArchived(ctx context.Context, client *scalingo.Client, appName, output
 			return processedArchives[i].ToTime.After(processedArchives[j].ToTime)
 		})
 
-		// Try to find an archive that contains the target time
-		found := false
+		// Try to find archives that contain or overlap with the target time
+		// If target time is within an archive's range, include it
+		foundExact := false
 		for _, archive := range processedArchives {
 			// Check if the target time is within this archive's range
 			if (targetTime.Equal(archive.FromTime) || targetTime.After(archive.FromTime)) &&
 				(targetTime.Equal(archive.ToTime) || targetTime.Before(archive.ToTime)) {
 				// Found exact match
 				relevantArchives = append(relevantArchives, archive)
-				found = true
+				foundExact = true
 
 				statusMsg := fmt.Sprintf("found archive containing target time %s (from %s to %s)",
 					targetTime.Format("2006-01-02 15:04:05"),
 					archive.FromTime.Format("2006-01-02 15:04:05"),
 					archive.ToTime.Format("2006-01-02 15:04:05"))
-				tui.UpdateStatus(statusCh, statusMsg)
-				break
+				status.UpdateStatus(statusCh, statusMsg)
+
+				// Don't break - we need to continue looking for adjacent archives
+				// that might be relevant for time range queries
 			}
 		}
 
-		if !found {
-			// If not exact match, try to find archives closest to the target time
+		// If filtering by hours or lines range, we need to check additional archives
+		// that may contain logs within that time range
+		isHoursFiltering := hoursCount > 0
+		isLinesFiltering := lineCount > 0
+
+		// If we're filtering by hours/lines or we didn't find an exact match
+		if isHoursFiltering || isLinesFiltering || !foundExact {
+			// Look for archives that may contain logs within the time range
+			// Calculate appropriate time range based on parameters
+			var timeRange time.Duration
+
+			if isHoursFiltering {
+				// Use specified hours
+				timeRange = time.Duration(hoursCount) * time.Hour
+			} else if isLinesFiltering {
+				// Estimate time range from line count (assuming ~1 line per second)
+				// Add a 50% buffer to be safe
+				estimatedSeconds := lineCount * 3 / 2
+				timeRange = time.Duration(estimatedSeconds) * time.Second
+
+				// Ensure a minimum time range of 5 minutes
+				if timeRange < 5*time.Minute {
+					timeRange = 5 * time.Minute
+				}
+
+				// And a maximum of 12 hours to avoid excessive data retrieval
+				if timeRange > 12*time.Hour {
+					timeRange = 12 * time.Hour
+				}
+
+				// Inform user about estimation
+				estimationMsg := fmt.Sprintf("estimated time range from %d lines: %s (±%s)",
+					lineCount,
+					formatDuration(timeRange/2),
+					formatDuration(timeRange/2))
+				status.UpdateStatus(statusCh, estimationMsg)
+			} else {
+				// Default for when we just didn't find an exact match
+				timeRange = 24 * time.Hour
+			}
+
+			rangeStartTime := targetTime.Add(-timeRange)
+			rangeEndTime := targetTime.Add(timeRange)
+
+			status.UpdateStatus(statusCh, fmt.Sprintf("searching for archives in time range: %s to %s",
+				rangeStartTime.Format("2006-01-02 15:04:05"),
+				rangeEndTime.Format("2006-01-02 15:04:05")))
+
+			for _, archive := range processedArchives {
+				// Skip if we already added this archive (exact match)
+				alreadyIncluded := false
+				for _, included := range relevantArchives {
+					if archive.ArchiveItem.URL == included.ArchiveItem.URL {
+						alreadyIncluded = true
+						break
+					}
+				}
+				if alreadyIncluded {
+					continue
+				}
+
+				// Include archive if it overlaps with our time range at all
+				// Archive overlaps with range if:
+				// - Archive starts before range ends AND
+				// - Archive ends after range starts
+				if (archive.FromTime.Before(rangeEndTime) || archive.FromTime.Equal(rangeEndTime)) &&
+					(archive.ToTime.After(rangeStartTime) || archive.ToTime.Equal(rangeStartTime)) {
+					relevantArchives = append(relevantArchives, archive)
+
+					// Check if archive fully contains the target range, partially overlaps,
+					// or is completely inside the target range
+					var overlapType string
+					if (archive.FromTime.Before(rangeStartTime) || archive.FromTime.Equal(rangeStartTime)) &&
+						(archive.ToTime.After(rangeEndTime) || archive.ToTime.Equal(rangeEndTime)) {
+						overlapType = "fully contains"
+					} else if archive.FromTime.After(rangeStartTime) && archive.ToTime.Before(rangeEndTime) {
+						overlapType = "completely inside"
+					} else {
+						overlapType = "partially overlaps with"
+					}
+
+					statusMsg := fmt.Sprintf("including archive that %s time range: %s to %s",
+						overlapType,
+						archive.FromTime.Format("2006-01-02 15:04:05"),
+						archive.ToTime.Format("2006-01-02 15:04:05"))
+					status.UpdateStatus(statusCh, statusMsg)
+				}
+			}
+		}
+
+		// If we still haven't found any relevant archives
+		if len(relevantArchives) == 0 {
 			// Find the archive that ends right before the target time
 			var beforeArchive *ProcessedArchive
 			var afterArchive *ProcessedArchive
@@ -133,19 +226,19 @@ func FetchArchived(ctx context.Context, client *scalingo.Client, appName, output
 
 					statusMsg := fmt.Sprintf("target time %s falls within a gap between archives",
 						targetTime.Format("2006-01-02 15:04:05"))
-					tui.UpdateStatus(statusCh, statusMsg)
+					status.UpdateStatus(statusCh, statusMsg)
 
 					beforeMsg := fmt.Sprintf("archive ending at: %s",
 						beforeArchive.ToTime.Format("2006-01-02 15:04:05"))
-					tui.UpdateStatus(statusCh, beforeMsg)
+					status.UpdateStatus(statusCh, beforeMsg)
 
 					afterMsg := fmt.Sprintf("next archive starts: %s",
 						afterArchive.FromTime.Format("2006-01-02 15:04:05"))
-					tui.UpdateStatus(statusCh, afterMsg)
+					status.UpdateStatus(statusCh, afterMsg)
 
 					gapMsg := fmt.Sprintf("gap duration: %s",
 						afterArchive.FromTime.Sub(beforeArchive.ToTime))
-					tui.UpdateStatus(statusCh, gapMsg)
+					status.UpdateStatus(statusCh, gapMsg)
 				}
 			} else if beforeArchive != nil {
 				// Only have archive before target
@@ -163,17 +256,23 @@ func FetchArchived(ctx context.Context, client *scalingo.Client, appName, output
 				return processedArchives[i].ToTime.After(processedArchives[j].ToTime)
 			})
 			relevantArchives = append(relevantArchives, processedArchives[0])
-			tui.UpdateStatus(statusCh, "no target time specified, using most recent archive")
+			status.UpdateStatus(statusCh, "no target time specified, using most recent archive")
 		}
 	}
 
 	// Report how many archives we're using
 	if len(relevantArchives) > 0 {
+		// Sort relevant archives by their start time (oldest first)
+		// This ensures logs are processed in chronological order
+		sort.Slice(relevantArchives, func(i, j int) bool {
+			return relevantArchives[i].FromTime.Before(relevantArchives[j].FromTime)
+		})
+
 		statusMsg := fmt.Sprintf("selected %d archives that may contain logs around the target time",
 			len(relevantArchives))
-		tui.UpdateStatus(statusCh, statusMsg)
+		status.UpdateStatus(statusCh, statusMsg)
 	} else {
-		tui.UpdateStatus(statusCh, "no relevant archives found for the target time, using recent logs only")
+		status.UpdateStatus(statusCh, "no relevant archives found for the target time, using recent logs only")
 		return 0, archiveDetails, nil
 	}
 
@@ -189,7 +288,7 @@ func FetchArchived(ctx context.Context, client *scalingo.Client, appName, output
 			i+1, len(relevantArchives),
 			archive.FromTime.Format("2006-01-02 15:04 MST"),
 			archive.ToTime.Format("2006-01-02 15:04 MST"))
-		tui.UpdateStatus(statusCh, statusMsg)
+		status.UpdateStatus(statusCh, statusMsg)
 
 		// Download the archive
 		if err := downloadArchive(ctx, client, archiveUrl, archiveFile); err != nil {
@@ -214,7 +313,7 @@ func FetchArchived(ctx context.Context, client *scalingo.Client, appName, output
 		// Processing message
 		processingMsg := fmt.Sprintf("processing archive %d/%dr %s",
 			i+1, len(relevantArchives), appName)
-		tui.UpdateStatus(statusCh, processingMsg)
+		status.UpdateStatus(statusCh, processingMsg)
 
 		// Append to main output file
 		if err := appendFiles(archiveFile, mainOutputFile); err != nil {
@@ -311,4 +410,20 @@ func countLines(filename string) (int, error) {
 	}
 
 	return count, nil
+}
+
+// formatDuration formats a duration in a user-friendly way
+func formatDuration(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%d seconds", int(d.Seconds()))
+	} else if d < time.Hour {
+		return fmt.Sprintf("%d minutes", int(d.Minutes()))
+	} else {
+		hours := int(d.Hours())
+		minutes := int(d.Minutes()) % 60
+		if minutes > 0 {
+			return fmt.Sprintf("%d hours %d minutes", hours, minutes)
+		}
+		return fmt.Sprintf("%d hours", hours)
+	}
 }

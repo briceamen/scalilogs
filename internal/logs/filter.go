@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/Scalingo/go-utils/errors/v2"
+	"github.com/briceamen/scalilogs/internal/status"
 	"github.com/briceamen/scalilogs/internal/timestamp"
-	"github.com/briceamen/scalilogs/internal/tui"
 )
 
 // LogLine represents a single log line with its timestamp
@@ -22,8 +22,82 @@ type LogLine struct {
 	Index     int // Store original line index for preserving ordering
 }
 
+// writeFilteredLogs writes filtered log lines to an output file with appropriate headers and markers
+func writeFilteredLogs(
+	ctx context.Context,
+	writer *bufio.Writer,
+	filteredLines []LogLine,
+	logLines []LogLine,
+	closestIndex int,
+	targetTimestampStr string,
+	smallestDiff time.Duration,
+	appName string,
+	additionalHeaderInfo func(*bufio.Writer) error,
+) error {
+	// Load Europe/Paris location for consistent display
+	parisLoc, err := time.LoadLocation("Europe/Paris")
+	if err != nil {
+		// Fallback to local timezone if location loading fails
+		parisLoc = time.Local
+	}
+
+	// Parse target timestamp to display timezone info
+	targetTimeObj, err := timestamp.ParseSearch(ctx, targetTimestampStr)
+	if err == nil {
+		// Update the display string to include timezone information
+		targetTimestampStr = targetTimeObj.In(parisLoc).Format("2006-01-02 15:04:05")
+	}
+
+	// Add header with common information
+	fmt.Fprintf(writer, "# Log search results for app: %s\n", appName)
+	fmt.Fprintf(writer, "# Target timestamp: %s (Europe/Paris)\n", targetTimestampStr)
+
+	// Include closest log timestamp info if available
+	if closestIndex >= 0 && !logLines[closestIndex].Timestamp.IsZero() {
+		// Convert closest timestamp to Paris time for display
+		closestTime := logLines[closestIndex].Timestamp.In(parisLoc)
+		closestTimeStr := closestTime.Format("2006-01-02 15:04:05.999999999 -0700 MST")
+
+		fmt.Fprintf(writer, "# Closest log timestamp: %s\n", closestTimeStr)
+
+		// Format the time difference in a more human-readable way
+		diffStr := smallestDiff.String()
+		if smallestDiff < time.Second {
+			diffStr = fmt.Sprintf("%.3fs", smallestDiff.Seconds())
+		}
+		fmt.Fprintf(writer, "# Time difference: %s\n", diffStr)
+	}
+
+	// Call the function to add additional headers specific to each filter type
+	if additionalHeaderInfo != nil {
+		if err := additionalHeaderInfo(writer); err != nil {
+			return errors.Wrap(ctx, err, "write additional header information")
+		}
+	}
+
+	fmt.Fprintf(writer, "# Total lines: %d\n", len(filteredLines))
+	fmt.Fprintf(writer, "\n")
+
+	// Write the filtered lines with markers for the closest one
+	closestLineIndex := -1
+	if closestIndex >= 0 {
+		closestLineIndex = logLines[closestIndex].Index
+	}
+
+	for _, logLine := range filteredLines {
+		if logLine.Index == closestLineIndex {
+			// Mark the closest log line with >>> <<<
+			fmt.Fprintf(writer, ">>> %s <<<\n", logLine.Content)
+		} else {
+			fmt.Fprintf(writer, "%s\n", logLine.Content)
+		}
+	}
+
+	return writer.Flush()
+}
+
 // FilterByTimestamp filters log lines around a specific timestamp, keeping a certain number of lines before and after
-func FilterByTimestamp(ctx context.Context, inputFile, outputFile, targetTimestampStr string, lineCount int, appName string, statusCh chan<- tui.StatusMessage) (int, error) {
+func FilterByTimestamp(ctx context.Context, inputFile, outputFile, targetTimestampStr string, lineCount int, appName string, statusCh chan<- status.StatusMessage) (int, error) {
 	// Parse target timestamp
 	targetTimestamp, err := timestamp.ParseSearch(ctx, targetTimestampStr)
 	if err != nil {
@@ -157,24 +231,7 @@ func FilterByTimestamp(ctx context.Context, inputFile, outputFile, targetTimesta
 		}
 	}
 
-	// Report the closest timestamp found
-	if closestIndex >= 0 && !logLines[closestIndex].Timestamp.IsZero() {
-		closestTime := logLines[closestIndex].Timestamp.Format("2006-01-02 15:04:05")
-		statusMsg := fmt.Sprintf("found closest timestamp at %s (difference: %s)",
-			closestTime, smallestDiff)
-		tui.UpdateStatus(statusCh, statusMsg)
-
-		extractedMsg := fmt.Sprintf("extracted %d lines around the target time",
-			len(filteredLines))
-		tui.UpdateStatus(statusCh, extractedMsg)
-	}
-
-	// Sort by original index to maintain log sequence
-	sort.Slice(filteredLines, func(i, j int) bool {
-		return filteredLines[i].Index < filteredLines[j].Index
-	})
-
-	// Write filtered lines to output file
+	// Create the output file
 	outFile, err := os.Create(outputFile)
 	if err != nil {
 		return 0, errors.Wrap(ctx, err, "create filtered output file")
@@ -182,26 +239,47 @@ func FilterByTimestamp(ctx context.Context, inputFile, outputFile, targetTimesta
 	defer outFile.Close()
 
 	writer := bufio.NewWriter(outFile)
-	for _, logLine := range filteredLines {
-		if _, err := writer.WriteString(logLine.Content + "\n"); err != nil {
-			return 0, errors.Wrap(ctx, err, "write filtered log line")
+
+	// Define additional header information specific to FilterByTimestamp
+	additionalHeaderInfo := func(w *bufio.Writer) error {
+		fmt.Fprintf(w, "# Showing %d lines before and after\n", lineCount)
+
+		// Add warnings about time gaps
+		if hasLargeTimeJumps(logLines, startIndex, endIndex) {
+			fmt.Fprintf(w, "# WARNING: Large time gaps detected in the logs.\n")
+			fmt.Fprintf(w, "# This may indicate gaps in the log coverage, possibly due to archive boundaries.\n")
 		}
+		return nil
 	}
 
-	if err := writer.Flush(); err != nil {
-		return 0, errors.Wrap(ctx, err, "flush filtered output file")
+	// Use the helper function to write logs
+	if err := writeFilteredLogs(
+		ctx,
+		writer,
+		filteredLines,
+		logLines,
+		closestIndex,
+		targetTimestampStr,
+		smallestDiff,
+		appName,
+		additionalHeaderInfo,
+	); err != nil {
+		return 0, errors.Wrap(ctx, err, "write filtered logs")
 	}
 
 	return len(filteredLines), nil
 }
 
 // FilterByHours filters log lines within a certain number of hours before and after a specific timestamp
-func FilterByHours(ctx context.Context, inputFile, outputFile, targetTimestampStr string, hoursCount int, appName string, statusCh chan<- tui.StatusMessage) (int, error) {
+func FilterByHours(ctx context.Context, inputFile, outputFile, targetTimestampStr string, hoursCount int, appName string, statusCh chan<- status.StatusMessage) (int, error) {
 	// Parse target timestamp
 	targetTimestamp, err := timestamp.ParseSearch(ctx, targetTimestampStr)
 	if err != nil {
 		return 0, errors.Wrap(ctx, err, "parse target timestamp")
 	}
+
+	// Normalize target timestamp to UTC for consistent comparison
+	targetTimestamp = targetTimestamp.UTC()
 
 	// Calculate time range
 	startTime := targetTimestamp.Add(-time.Duration(hoursCount) * time.Hour)
@@ -253,6 +331,12 @@ func FilterByHours(ctx context.Context, inputFile, outputFile, targetTimestampSt
 			for job := range jobs {
 				// Try to parse timestamp from the line
 				ts, _ := timestamp.Parse(ctx, job.line)
+
+				// Normalize timestamp to UTC for consistent comparison
+				if !ts.IsZero() {
+					ts = ts.UTC()
+				}
+
 				results <- LogLine{
 					Timestamp: ts,
 					Content:   job.line,
@@ -307,24 +391,7 @@ func FilterByHours(ctx context.Context, inputFile, outputFile, targetTimestampSt
 		}
 	}
 
-	// Report the closest timestamp found
-	if closestIndex >= 0 && !logLines[closestIndex].Timestamp.IsZero() {
-		closestTime := logLines[closestIndex].Timestamp.Format("2006-01-02 15:04:05")
-		statusMsg := fmt.Sprintf("found closest timestamp at %s (difference: %s)",
-			closestTime, smallestDiff)
-		tui.UpdateStatus(statusCh, statusMsg)
-
-		extractedMsg := fmt.Sprintf("extracted %d logs within ±%d hours of the target time",
-			len(filteredLines), hoursCount)
-		tui.UpdateStatus(statusCh, extractedMsg)
-	}
-
-	// Sort by original index to maintain log sequence
-	sort.Slice(filteredLines, func(i, j int) bool {
-		return filteredLines[i].Index < filteredLines[j].Index
-	})
-
-	// Write filtered lines to output file
+	// Create the output file
 	outFile, err := os.Create(outputFile)
 	if err != nil {
 		return 0, errors.Wrap(ctx, err, "create filtered output file")
@@ -332,14 +399,59 @@ func FilterByHours(ctx context.Context, inputFile, outputFile, targetTimestampSt
 	defer outFile.Close()
 
 	writer := bufio.NewWriter(outFile)
-	for _, logLine := range filteredLines {
-		if _, err := writer.WriteString(logLine.Content + "\n"); err != nil {
-			return 0, errors.Wrap(ctx, err, "write filtered log line")
-		}
+
+	// Try to load Europe/Paris location for display
+	parisLoc, err := time.LoadLocation("Europe/Paris")
+	if err != nil {
+		parisLoc = time.Local
 	}
 
-	if err := writer.Flush(); err != nil {
-		return 0, errors.Wrap(ctx, err, "flush filtered output file")
+	// Define additional header information specific to FilterByHours
+	additionalHeaderInfo := func(w *bufio.Writer) error {
+		// Convert time range to Europe/Paris for display
+		displayStartTime := startTime.In(parisLoc)
+		displayEndTime := endTime.In(parisLoc)
+
+		fmt.Fprintf(w, "# Time range: %s to %s (Europe/Paris)\n",
+			displayStartTime.Format("2006-01-02 15:04:05"),
+			displayEndTime.Format("2006-01-02 15:04:05"))
+		fmt.Fprintf(w, "# Hours before and after: %d\n", hoursCount)
+
+		// Check for logs before and after target time
+		var hasLogsBeforeTarget, hasLogsAfterTarget bool
+		for _, logLine := range filteredLines {
+			if logLine.Timestamp.Before(targetTimestamp) {
+				hasLogsBeforeTarget = true
+			}
+			if logLine.Timestamp.After(targetTimestamp) {
+				hasLogsAfterTarget = true
+			}
+		}
+
+		if !hasLogsBeforeTarget {
+			fmt.Fprintf(w, "# WARNING: No logs found before the target timestamp. This may indicate missing data.\n")
+		}
+
+		if !hasLogsAfterTarget {
+			fmt.Fprintf(w, "# WARNING: No logs found after the target timestamp. This may indicate missing data.\n")
+		}
+
+		return nil
+	}
+
+	// Use the helper function to write logs
+	if err := writeFilteredLogs(
+		ctx,
+		writer,
+		filteredLines,
+		logLines,
+		closestIndex,
+		targetTimestampStr,
+		smallestDiff,
+		appName,
+		additionalHeaderInfo,
+	); err != nil {
+		return 0, errors.Wrap(ctx, err, "write filtered logs")
 	}
 
 	return len(filteredLines), nil

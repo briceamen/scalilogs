@@ -70,6 +70,10 @@ func RunSurveyFirstPart(ctx context.Context) (string, string, string, error) {
 		if len(regions) == 0 {
 			fmt.Printf("No regions defined for %s. Using default region: %s\n", env, scalingo.RegionOscFr1)
 			region = scalingo.RegionOscFr1
+		} else if len(regions) == 1 {
+			// Automatically select the only available region
+			region = regions[0].Name
+			fmt.Printf("Only one region available: %s (%s). Automatically selected.\n", regions[0].DisplayName, regions[0].Name)
 		} else {
 			fmt.Println("\nPlease select a region:")
 
@@ -275,6 +279,10 @@ func RunSurvey(ctx context.Context, client *scalingo.ScalingoClient) (string, st
 			if len(regions) == 0 {
 				fmt.Printf("No regions found. Using default region: %s\n", scalingo.RegionOscFr1)
 				region = scalingo.RegionOscFr1
+			} else if len(regions) == 1 {
+				// Automatically select the only available region
+				region = regions[0].Name
+				fmt.Printf("Only one region available: %s (%s). Automatically selected.\n", regions[0].DisplayName, regions[0].Name)
 			} else {
 				// Ask for region selection
 				fmt.Printf("Enter your choice (1-%d): ", len(regions))

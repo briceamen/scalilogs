@@ -7,20 +7,21 @@ import (
 	"time"
 
 	"github.com/Scalingo/go-utils/errors/v2"
+	"github.com/briceamen/scalilogs/internal/status"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
 // RunExtractor runs a Bubbletea-based UI for log extraction
-func RunExtractor(ctx context.Context, appName, targetTimestamp string, extractFunc func(chan StatusMessage, chan ErrorMessage, chan FinishMessage) error) error {
+func RunExtractor(ctx context.Context, appName, targetTimestamp string, extractFunc func(chan status.StatusMessage, chan status.ErrorMessage, chan status.FinishMessage) error) error {
 	// Create channels for communication
-	statusCh := make(chan StatusMessage)
-	errorCh := make(chan ErrorMessage)
-	finishCh := make(chan FinishMessage)
+	statusCh := make(chan status.StatusMessage)
+	errorCh := make(chan status.ErrorMessage)
+	finishCh := make(chan status.FinishMessage)
 
 	// Run the extraction in a separate goroutine
 	go func() {
 		if err := extractFunc(statusCh, errorCh, finishCh); err != nil {
-			errorCh <- ErrorMessage{Error: err}
+			errorCh <- status.ErrorMessage{Error: err}
 		}
 	}()
 
@@ -28,7 +29,7 @@ func RunExtractor(ctx context.Context, appName, targetTimestamp string, extractF
 	model := NewModel(appName, targetTimestamp)
 	// Add the title as a progress entry
 	model.progressEntries = append(model.progressEntries, ProgressEntry{
-		Message: titleStyle.Render("SCALILOGS"),
+		Message: titleStyle.Render("Scalilogs"),
 		Value:   0,
 	})
 
@@ -60,28 +61,12 @@ func RunExtractor(ctx context.Context, appName, targetTimestamp string, extractF
 	return nil
 }
 
-// UpdateStatus sends a status update to the channel
-func UpdateStatus(statusCh chan<- StatusMessage, status string, value ...int) {
-	val := 0
-	if len(value) > 0 {
-		val = value[0]
-	}
-
-	select {
-	case statusCh <- StatusMessage{Status: status, Value: val}:
-		// Sent successfully
-	default:
-		// Channel is full or closed, but don't print directly as that would
-		// interfere with the Bubble Tea UI. Just drop the message in this case.
-	}
-}
-
 // ReportError sends an error to the channel
-func ReportError(errorCh chan<- ErrorMessage, ctx context.Context, err error, message string) error {
+func ReportError(errorCh chan<- status.ErrorMessage, ctx context.Context, err error, message string) error {
 	wrappedErr := errors.Wrap(ctx, err, message)
 
 	select {
-	case errorCh <- ErrorMessage{Error: wrappedErr}:
+	case errorCh <- status.ErrorMessage{Error: wrappedErr}:
 		// Sent successfully
 	default:
 		// Channel is full or closed, print to stderr as a fallback
@@ -92,9 +77,9 @@ func ReportError(errorCh chan<- ErrorMessage, ctx context.Context, err error, me
 }
 
 // FinishProcess sends the final completion message to the channel
-func FinishProcess(finishCh chan<- FinishMessage, outputFile string, liveLogsCount, archiveLogsCount, totalLines, filteredLineCount int, archiveDetails map[string]int, elapsedTime time.Duration) {
+func FinishProcess(finishCh chan<- status.FinishMessage, outputFile string, liveLogsCount, archiveLogsCount, totalLines, filteredLineCount int, archiveDetails map[string]int, elapsedTime time.Duration) {
 	select {
-	case finishCh <- FinishMessage{
+	case finishCh <- status.FinishMessage{
 		OutputFile:        outputFile,
 		LiveLogsCount:     liveLogsCount,
 		ArchiveLogsCount:  archiveLogsCount,

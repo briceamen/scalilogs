@@ -11,6 +11,7 @@ import (
 
 	"github.com/Scalingo/go-utils/errors/v2"
 	"github.com/briceamen/scalilogs/internal/archive"
+	"github.com/briceamen/scalilogs/internal/status"
 	"github.com/briceamen/scalilogs/internal/timestamp"
 	"github.com/briceamen/scalilogs/internal/tui"
 	"github.com/briceamen/scalilogs/pkg/scalingo"
@@ -20,17 +21,17 @@ import (
 func ExtractLogs(ctx context.Context, client *scalingo.ScalingoClient, appName, targetTimestamp string, lineCount int, hoursCount int) (string, error) {
 	var outputFilePath string
 
-	extractFunc := func(statusCh chan tui.StatusMessage, errorCh chan tui.ErrorMessage, finishCh chan tui.FinishMessage) error {
+	extractFunc := func(statusCh chan status.StatusMessage, errorCh chan status.ErrorMessage, finishCh chan status.FinishMessage) error {
 		// Record start time for performance tracking
 		startTime := time.Now()
 
 		// Update status
-		tui.UpdateStatus(statusCh, "initializing log extraction")
+		status.UpdateStatus(statusCh, "initializing log extraction")
 
 		// Recreate the client with statusCh to capture token exchange and region selection logs
-		recreatedClient, initErr := scalingo.NewScalingoClient(ctx, client.Env, client.Region, statusCh)
-		if initErr != nil {
-			return tui.ReportError(errorCh, ctx, initErr, "recreate scalingo client")
+		recreatedClient, err := scalingo.NewScalingoClient(ctx, client.Env, client.Region, statusCh)
+		if err != nil {
+			return status.ReportError(ctx, errorCh, err)
 		}
 		client = recreatedClient
 
@@ -49,7 +50,7 @@ func ExtractLogs(ctx context.Context, client *scalingo.ScalingoClient, appName, 
 
 		// Parse target timestamp if provided (for archive filtering)
 		var targetTime time.Time
-		var err error
+
 		if targetTimestamp != "" {
 			targetTime, err = timestamp.ParseSearch(ctx, targetTimestamp)
 			if err != nil {
@@ -58,7 +59,7 @@ func ExtractLogs(ctx context.Context, client *scalingo.ScalingoClient, appName, 
 		}
 
 		// Update status
-		tui.UpdateStatus(statusCh, "checking available log archives")
+		status.UpdateStatus(statusCh, "checking available log archives")
 
 		// Determine if we need archived logs based on the target timestamp
 		// We always fetch recent logs for complete coverage
@@ -69,28 +70,52 @@ func ExtractLogs(ctx context.Context, client *scalingo.ScalingoClient, appName, 
 			archivesResp, err := client.FetchLogsArchives(ctx, appName)
 			if err != nil {
 				// If we can't fetch archives, default to recent logs only
-				tui.UpdateStatus(statusCh, "warning: failed to fetch archives list, using recent logs only")
+				status.UpdateStatus(statusCh, "warning: failed to fetch archives list, using recent logs only")
 			} else if len(archivesResp.Archives) > 0 {
 				// Get the most recent archive end time
 				latestArchive := archivesResp.Archives[0]
 				// Parse the "To" timestamp of the most recent archive
 				latestArchiveEnd, err := time.Parse("Mon Jan 2 15:04:05 -0700 MST 2006", latestArchive.To)
 				if err != nil {
-					tui.UpdateStatus(statusCh, "warning: failed to parse archive end time, using both recent and archived logs")
+					status.UpdateStatus(statusCh, "warning: failed to parse archive end time, using both recent and archived logs")
 					needsArchivedLogs = true
 				} else {
-					// If target time is older than or close to the latest archive, include archived logs
-					if !targetTime.After(latestArchiveEnd) || targetTime.Sub(latestArchiveEnd) < 2*time.Hour {
-						statusMsg := fmt.Sprintf("target time %s is within archives (latest ends at %s)",
+					// Calculate time range based on hours if set, otherwise use a default buffer
+					timeBuffer := 2 * time.Hour
+					if hoursCount > 0 {
+						timeBuffer = time.Duration(hoursCount) * time.Hour
+					} else if lineCount > 0 {
+						// Estimate time range from line count (assuming ~1 line per second with buffer)
+						estimatedSeconds := lineCount * 3 / 2
+						timeBuffer = time.Duration(estimatedSeconds) * time.Second
+
+						// Ensure a reasonable minimum time buffer
+						if timeBuffer < 5*time.Minute {
+							timeBuffer = 5 * time.Minute
+						}
+					}
+
+					// Calculate the range start time based on the target time and buffer
+					rangeStartTime := targetTime.Add(-timeBuffer)
+
+					// Always include archives if:
+					// 1. Target time is before or equal to the latest archive end time, OR
+					// 2. The time range starts before the latest archive end time, OR
+					// 3. Target time is within timeBuffer of the latest archive end time
+					// This handles the edge case where logs span both live logs and archives
+					if !targetTime.After(latestArchiveEnd) ||
+						!rangeStartTime.After(latestArchiveEnd) ||
+						targetTime.Sub(latestArchiveEnd) < timeBuffer {
+						statusMsg := fmt.Sprintf("logs may span archives and live logs: target time %s, latest archive ends at %s",
 							targetTime.Format("2006-01-02 15:04:05"),
 							latestArchiveEnd.Format("2006-01-02 15:04:05"))
-						tui.UpdateStatus(statusCh, statusMsg)
+						status.UpdateStatus(statusCh, statusMsg)
 						needsArchivedLogs = true
 					} else {
 						statusMsg := fmt.Sprintf("target time %s is after archives (latest ends at %s)",
 							targetTime.Format("2006-01-02 15:04:05"),
 							latestArchiveEnd.Format("2006-01-02 15:04:05"))
-						tui.UpdateStatus(statusCh, statusMsg)
+						status.UpdateStatus(statusCh, statusMsg)
 					}
 				}
 			}
@@ -102,30 +127,30 @@ func ExtractLogs(ctx context.Context, client *scalingo.ScalingoClient, appName, 
 		archiveDetails := make(map[string]int)
 
 		// Always get recent logs for complete coverage
-		tui.UpdateStatus(statusCh, "fetching recent logs")
+		status.UpdateStatus(statusCh, "fetching recent logs")
 		liveLogsCount, err = fetchRecentLogs(ctx, client.Client, appName, tempOutputFile)
 		if err != nil {
-			return tui.ReportError(errorCh, ctx, err, "fetch recent logs")
+			return status.ReportError(ctx, errorCh, err)
 		}
-		tui.UpdateStatus(statusCh, "fetched recent logs", liveLogsCount)
+		status.UpdateStatus(statusCh, "fetched recent logs", liveLogsCount)
 
 		// Get archived logs if needed
 		if needsArchivedLogs {
-			tui.UpdateStatus(statusCh, "fetching archived logs")
-			archiveLogsCount, archiveDetails, err = archive.FetchArchived(ctx, client.Client, appName, outputDir, tempOutputFile, targetTime, statusCh)
+			status.UpdateStatus(statusCh, "fetching archived logs")
+			archiveLogsCount, archiveDetails, err = archive.FetchArchived(ctx, client.Client, appName, outputDir, tempOutputFile, targetTime, statusCh, hoursCount, lineCount)
 			if err != nil {
-				return tui.ReportError(errorCh, ctx, err, "fetch archived logs")
+				return status.ReportError(ctx, errorCh, err)
 			}
-			tui.UpdateStatus(statusCh, "fetched archive logs", archiveLogsCount)
+			status.UpdateStatus(statusCh, "fetched archive logs", archiveLogsCount)
 		}
 
 		// Sort the logs by timestamp
-		tui.UpdateStatus(statusCh, "sorting logs by timestamp")
+		status.UpdateStatus(statusCh, "sorting logs by timestamp")
 		totalLines, err := SortByTimestamp(ctx, tempOutputFile, outputFile)
 		if err != nil {
-			return tui.ReportError(errorCh, ctx, err, "sort logs by timestamp")
+			return status.ReportError(ctx, errorCh, err)
 		}
-		tui.UpdateStatus(statusCh, "sorted total lines", totalLines)
+		status.UpdateStatus(statusCh, "sorted total lines", totalLines)
 
 		// If targeting a specific timestamp, filter logs
 		filteredLineCount := 0
@@ -133,27 +158,27 @@ func ExtractLogs(ctx context.Context, client *scalingo.ScalingoClient, appName, 
 			if hoursCount > 0 {
 				// Filter by hours around the timestamp
 				statusMsg := fmt.Sprintf("filtering logs around timestamp: %s (±%d hours)", targetTimestamp, hoursCount)
-				tui.UpdateStatus(statusCh, statusMsg)
+				status.UpdateStatus(statusCh, statusMsg)
 
 				filterOutputFile := filepath.Join(outputDir, fmt.Sprintf("%s-%s-filtered.log", appName, ts))
 				filteredLineCount, err = FilterByHours(ctx, outputFile, filterOutputFile, targetTimestamp, hoursCount, appName, statusCh)
 				if err != nil {
-					return tui.ReportError(errorCh, ctx, err, "filter logs by hours")
+					return status.ReportError(ctx, errorCh, err)
 				}
 				outputFile = filterOutputFile
-				tui.UpdateStatus(statusCh, "filtered logs", filteredLineCount)
+				status.UpdateStatus(statusCh, "filtered logs", filteredLineCount)
 			} else if lineCount > 0 {
 				// Filter by lines around the timestamp
 				statusMsg := fmt.Sprintf("filtering logs around timestamp: %s (±%d lines)", targetTimestamp, lineCount)
-				tui.UpdateStatus(statusCh, statusMsg)
+				status.UpdateStatus(statusCh, statusMsg)
 
 				filterOutputFile := filepath.Join(outputDir, fmt.Sprintf("%s-%s-filtered.log", appName, ts))
 				filteredLineCount, err = FilterByTimestamp(ctx, outputFile, filterOutputFile, targetTimestamp, lineCount, appName, statusCh)
 				if err != nil {
-					return tui.ReportError(errorCh, ctx, err, "filter logs by timestamp")
+					return status.ReportError(ctx, errorCh, err)
 				}
 				outputFile = filterOutputFile
-				tui.UpdateStatus(statusCh, "filtered logs", filteredLineCount)
+				status.UpdateStatus(statusCh, "filtered logs", filteredLineCount)
 			}
 		}
 
