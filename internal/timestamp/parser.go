@@ -106,6 +106,11 @@ func ValidateAndNormalize(ctx context.Context, input string) (string, error) {
 		return fmt.Sprintf("%s 12:00:00", yesterday), nil
 	}
 
+	// NEW: Check for "now" - use current time
+	if lowercaseInput == "now" {
+		return time.Now().Format(dateTimeFormat), nil
+	}
+
 	// NEW: Check for just a time value without full timestamp
 	// 1. Handle just "HH" format (e.g., "12" -> "today at 12:00:00")
 	hourOnlyRegex := regexp.MustCompile(`^(\d{1,2})$`)

@@ -6,14 +6,16 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/briceamen/logaround/internal/logs"
-	"github.com/briceamen/logaround/internal/ui"
-	"github.com/briceamen/logaround/pkg/scalingo"
+	"github.com/briceamen/scalilogs/internal/logs"
+	"github.com/briceamen/scalilogs/internal/tui"
+	"github.com/briceamen/scalilogs/internal/ui"
+	"github.com/briceamen/scalilogs/pkg/scalingo"
 )
 
 func main() {
 	// Create a root context for the entire application
 	ctx := context.Background()
+	statusCh := make(chan tui.StatusMessage)
 
 	// Define command-line flags
 	var appNameFlag string
@@ -25,7 +27,7 @@ func main() {
 
 	// Short flags
 	flag.StringVar(&appNameFlag, "a", "", "App name")
-	flag.StringVar(&timestampFlag, "t", "", "Timestamp (format: YYYY-MM-DD HH:MM:SS)")
+	flag.StringVar(&timestampFlag, "t", "", "Timestamp (format: YYYY-MM-DD HH:MM:SS, 'now', or 'today at HH:MM:SS')")
 	flag.IntVar(&lineCountFlag, "l", 0, "Number of lines before and after timestamp")
 	flag.IntVar(&hoursFlag, "h", 0, "Number of hours before and after timestamp")
 	flag.StringVar(&envFlag, "e", scalingo.EnvProduction, "Environment (production/staging/dev)")
@@ -33,7 +35,7 @@ func main() {
 
 	// Long flags
 	flag.StringVar(&appNameFlag, "app", "", "App name")
-	flag.StringVar(&timestampFlag, "timestamp", "", "Timestamp (format: YYYY-MM-DD HH:MM:SS)")
+	flag.StringVar(&timestampFlag, "timestamp", "", "Timestamp (format: YYYY-MM-DD HH:MM:SS, 'now', or 'today at HH:MM:SS')")
 	flag.IntVar(&lineCountFlag, "lines", 0, "Number of lines before and after timestamp")
 	flag.IntVar(&hoursFlag, "hours", 0, "Number of hours before and after timestamp")
 	flag.StringVar(&envFlag, "env", scalingo.EnvProduction, "Environment (production/staging/dev)")
@@ -44,7 +46,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Usage: %s [OPTIONS]\n\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "Options:\n")
 		fmt.Fprintf(os.Stderr, "  -a, --app string       App name\n")
-		fmt.Fprintf(os.Stderr, "  -t, --timestamp string Timestamp (format: YYYY-MM-DD HH:MM:SS)\n")
+		fmt.Fprintf(os.Stderr, "  -t, --timestamp string Timestamp (format: YYYY-MM-DD HH:MM:SS, 'now', or 'today at HH:MM:SS')\n")
 		fmt.Fprintf(os.Stderr, "  -l, --lines int        Number of lines before and after timestamp\n")
 		fmt.Fprintf(os.Stderr, "  -h, --hours int        Number of hours before and after timestamp\n")
 		fmt.Fprintf(os.Stderr, "  -e, --env string       Environment (production/staging/dev, default: production)\n")
@@ -95,7 +97,7 @@ func main() {
 		}
 
 		// Create the client with specified parameters
-		client, err = scalingo.NewScalingoClient(ctx, env, region)
+		client, err = scalingo.NewScalingoClient(ctx, env, region, statusCh)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error initializing Scalingo client: %v\n", err)
 			os.Exit(1)
@@ -121,7 +123,7 @@ func main() {
 		}
 
 		// Now create the client with the selected environment and region
-		client, err = scalingo.NewScalingoClient(ctx, env, region)
+		client, err = scalingo.NewScalingoClient(ctx, env, region, statusCh)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error initializing Scalingo client: %v\n", err)
 			os.Exit(1)
@@ -136,11 +138,13 @@ func main() {
 	}
 
 	// Use the client to extract logs
-	outputFile, err := logs.ExtractLogs(ctx, client, appName, timestamp, lineCount, hours)
+	outputFilePath, err := logs.ExtractLogs(ctx, client, appName, timestamp, lineCount, hours)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 
-	fmt.Println("Logs extracted to:", outputFile)
+	// Print success message with file path
+	fmt.Println("✓ Extraction complete!")
+	fmt.Printf("Logs saved to: %s\n", outputFilePath)
 }

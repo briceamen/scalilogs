@@ -3,7 +3,6 @@ package logs
 import (
 	"bufio"
 	"context"
-	"fmt"
 	"os"
 	"runtime"
 	"sort"
@@ -11,13 +10,11 @@ import (
 	"sync"
 
 	"github.com/Scalingo/go-utils/errors/v2"
-	"github.com/briceamen/logaround/internal/timestamp"
+	"github.com/briceamen/scalilogs/internal/timestamp"
 )
 
 // SortByTimestamp sorts the log lines in the input file by their timestamps
 func SortByTimestamp(ctx context.Context, inputFile, outputFile string) (int, error) {
-	fmt.Println("Sorting logs by timestamp...")
-
 	// Open input file
 	file, err := os.Open(inputFile)
 	if err != nil {
@@ -116,6 +113,5 @@ func SortByTimestamp(ctx context.Context, inputFile, outputFile string) (int, er
 		return 0, errors.Wrap(ctx, err, "flush sorted output file")
 	}
 
-	fmt.Printf("Sorted %d log lines\n\n", lineCount)
 	return lineCount, nil
 }

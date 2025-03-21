@@ -1,4 +1,4 @@
-# Logaround
+# Scalilogs
 
 A command-line utility for extracting and filtering logs from applications hosted on Scalingo around a specific timestamp.
 
@@ -24,25 +24,25 @@ The tool can be used in interactive mode or with command-line flags.
 
 ```bash
 # Run in interactive mode
-logaround
+scalilogs
 
 # Run with command-line flags (filtering by lines around timestamp)
-logaround -a app-name -t "2023-06-15 14:30:00" -l 100
+scalilogs -a app-name -t "2023-06-15 14:30:00" -l 100
 
 # Run with command-line flags (filtering by hours around timestamp)
-logaround -a app-name -t "2023-06-15 14:30:00" -h 2
+scalilogs -a app-name -t "2023-06-15 14:30:00" -h 2
 
 # Run with a specific region
-logaround -a app-name -t "2023-06-15 14:30:00" -l 100 -r osc-secnum-fr1
+scalilogs -a app-name -t "2023-06-15 14:30:00" -l 100 -r osc-secnum-fr1
 
 # Run with a specific environment
-logaround -a app-name -t "2023-06-15 14:30:00" -l 100 -e staging
+scalilogs -a app-name -t "2023-06-15 14:30:00" -l 100 -e staging
 
 # Long-form flags with environment and region
-logaround --app my-app --timestamp "2023-06-15 14:30:00" --hours 3 --env production --region osc-fr1
+scalilogs --app my-app --timestamp "2023-06-15 14:30:00" --hours 3 --env production --region osc-fr1
 
 # With relative timestamp (will be validated and normalized)
-logaround -a my-app -t "Today at 14:30:00" -l 100
+scalilogs -a my-app -t "Today at 14:30:00" -l 100
 ```
 
 ### Interactive Mode
@@ -61,7 +61,7 @@ When run without flags, the tool will guide you through the log extraction proce
 For scripting or automation, you can use these flags:
 
 ```bash
-logaround [OPTIONS]
+scalilogs [OPTIONS]
 
 Options:
   -a, --app string       App name
@@ -85,12 +85,12 @@ The tool supports various timestamp formats:
 
 ```bash
 # Install directly using Go
-go install github.com/briceamen/logaround@latest
+go install github.com/briceamen/scalilogs@latest
 
 # Or build from source:
 # Clone the repository
-git clone https://github.com/briceamen/logaround.git
-cd logaround
+git clone https://github.com/briceamen/scalilogs.git
+cd scalilogs
 
 # Build only
 make

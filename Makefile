@@ -1,4 +1,4 @@
-BINARY_NAME=logaround
+BINARY_NAME=scalilogs
 GOBIN?=$(shell go env GOBIN)
 ifeq ($(GOBIN),)
 	GOBIN=$(HOME)/go/bin

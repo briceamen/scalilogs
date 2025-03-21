@@ -8,8 +8,8 @@ import (
 	"strings"
 
 	"github.com/Scalingo/go-utils/errors/v2"
-	"github.com/briceamen/logaround/internal/timestamp"
-	"github.com/briceamen/logaround/pkg/scalingo"
+	"github.com/briceamen/scalilogs/internal/timestamp"
+	"github.com/briceamen/scalilogs/pkg/scalingo"
 )
 
 // RunSurveyFirstPart runs the first part of the interactive survey without needing a client
@@ -125,6 +125,7 @@ func RunSurveySecondPart(ctx context.Context, client *scalingo.ScalingoClient, a
 	fmt.Println("  - Today at HH:MM:SS (e.g., Today at 14:30:00)")
 	fmt.Println("  - Yesterday at HH:MM:SS (e.g., Yesterday at 14:30:00)")
 	fmt.Println("  - Monday/Tuesday/etc. at HH:MM:SS (e.g., Monday at 14:30:00)")
+	fmt.Println("  - now (current time)")
 	fmt.Print("Timestamp: ")
 	timestampInput, err = reader.ReadString('\n')
 	if err != nil {
@@ -309,6 +310,7 @@ func RunSurvey(ctx context.Context, client *scalingo.ScalingoClient) (string, st
 	fmt.Println("  - Today at HH:MM:SS (e.g., Today at 14:30:00)")
 	fmt.Println("  - Yesterday at HH:MM:SS (e.g., Yesterday at 14:30:00)")
 	fmt.Println("  - Monday/Tuesday/etc. at HH:MM:SS (e.g., Monday at 14:30:00)")
+	fmt.Println("  - now (current time)")
 	fmt.Print("Timestamp: ")
 	timestampInput, err = reader.ReadString('\n')
 	if err != nil {

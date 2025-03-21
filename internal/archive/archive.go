@@ -11,13 +11,13 @@ import (
 	"time"
 
 	"github.com/Scalingo/go-utils/errors/v2"
-	"github.com/briceamen/logaround/internal/ui"
-	"github.com/briceamen/logaround/pkg/scalingo"
+	"github.com/briceamen/scalilogs/internal/tui"
+	"github.com/briceamen/scalilogs/pkg/scalingo"
 )
 
 // FetchArchived fetches archived logs for the specified app
-func FetchArchived(ctx context.Context, client *scalingo.Client, appName, outputDir, mainOutputFile string, targetTime time.Time, spinner *ui.Spinner) (int, map[string]int, error) {
-	fmt.Printf("\nFetching archived logs for %s...\n", appName)
+func FetchArchived(ctx context.Context, client *scalingo.Client, appName, outputDir, mainOutputFile string, targetTime time.Time, statusCh chan<- tui.StatusMessage) (int, map[string]int, error) {
+	tui.UpdateStatus(statusCh, "fetching archived logs for "+appName)
 
 	totalLines := 0
 	archiveDetails := make(map[string]int)
@@ -30,7 +30,7 @@ func FetchArchived(ctx context.Context, client *scalingo.Client, appName, output
 
 	// Check if there are no archives available
 	if len(archivesResp.Archives) == 0 {
-		fmt.Println("No log archives available for this application.")
+		tui.UpdateStatus(statusCh, "no log archives available for this application")
 		return 0, archiveDetails, nil
 	}
 
@@ -49,14 +49,12 @@ func FetchArchived(ctx context.Context, client *scalingo.Client, appName, output
 		// Format: "Mon Jan 2 15:04:05 -0700 MST 2006"
 		fromTime, err := time.Parse("Mon Jan 2 15:04:05 -0700 MST 2006", archive.From)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: Failed to parse From date: %v\n", err)
-			continue
+			return 0, nil, errors.Wrap(ctx, err, "parse archive from time")
 		}
 
 		toTime, err := time.Parse("Mon Jan 2 15:04:05 -0700 MST 2006", archive.To)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: Failed to parse To date: %v\n", err)
-			continue
+			return 0, nil, errors.Wrap(ctx, err, "parse archive to time")
 		}
 
 		processedArchives = append(processedArchives, ProcessedArchive{
@@ -67,150 +65,163 @@ func FetchArchived(ctx context.Context, client *scalingo.Client, appName, output
 		})
 	}
 
-	// Sort archives by date (newest first for more efficient filtering)
-	sort.Slice(processedArchives, func(i, j int) bool {
-		return processedArchives[i].ToTime.After(processedArchives[j].ToTime)
-	})
-
-	// Filter archives if a target time is provided
+	// Find relevant archives based on the target time
 	var relevantArchives []ProcessedArchive
+
 	if !targetTime.IsZero() {
-		// For log line filtering, we need a smaller time buffer that's sufficient
-		// for finding ~1000 lines before and after the target timestamp
-		// Assuming 1 line per second on average as a conservative estimate
-		// This is about 15-20 minutes before and after
-		timeBuffer := 20 * time.Minute
-		startBuffer := targetTime.Add(-timeBuffer)
-		endBuffer := targetTime.Add(timeBuffer)
+		// Sort archives by time (newest first)
+		sort.Slice(processedArchives, func(i, j int) bool {
+			return processedArchives[i].ToTime.After(processedArchives[j].ToTime)
+		})
 
-		// Check if the target time falls within any archives
-		targetTimeInArchive := false
-		var containingArchive *ProcessedArchive
+		// Try to find an archive that contains the target time
+		found := false
+		for _, archive := range processedArchives {
+			// Check if the target time is within this archive's range
+			if (targetTime.Equal(archive.FromTime) || targetTime.After(archive.FromTime)) &&
+				(targetTime.Equal(archive.ToTime) || targetTime.Before(archive.ToTime)) {
+				// Found exact match
+				relevantArchives = append(relevantArchives, archive)
+				found = true
 
-		for i, archive := range processedArchives {
-			if (archive.FromTime.Before(targetTime) || archive.FromTime.Equal(targetTime)) &&
-				(archive.ToTime.After(targetTime) || archive.ToTime.Equal(targetTime)) {
-				targetTimeInArchive = true
-				containingArchive = &processedArchives[i]
+				statusMsg := fmt.Sprintf("found archive containing target time %s (from %s to %s)",
+					targetTime.Format("2006-01-02 15:04:05"),
+					archive.FromTime.Format("2006-01-02 15:04:05"),
+					archive.ToTime.Format("2006-01-02 15:04:05"))
+				tui.UpdateStatus(statusCh, statusMsg)
 				break
 			}
 		}
 
-		// If the target time is found in an archive, use just that one
-		if targetTimeInArchive && containingArchive != nil {
-			fmt.Printf("Found archive containing target time %s (from %s to %s)\n",
-				targetTime.Format("2006-01-02 15:04:05"),
-				containingArchive.FromTime.Format("2006-01-02 15:04:05"),
-				containingArchive.ToTime.Format("2006-01-02 15:04:05"))
-			relevantArchives = append(relevantArchives, *containingArchive)
-		} else {
-			// First, find archives that might overlap with our buffer period
-			for _, archive := range processedArchives {
-				// Check if archive time range overlaps with our target range
-				if (archive.FromTime.Before(endBuffer) || archive.FromTime.Equal(endBuffer)) &&
-					(archive.ToTime.After(startBuffer) || archive.ToTime.Equal(startBuffer)) {
-					relevantArchives = append(relevantArchives, archive)
+		if !found {
+			// If not exact match, try to find archives closest to the target time
+			// Find the archive that ends right before the target time
+			var beforeArchive *ProcessedArchive
+			var afterArchive *ProcessedArchive
+
+			for i, archive := range processedArchives {
+				if archive.ToTime.Before(targetTime) {
+					beforeArchive = &processedArchives[i]
+					break
 				}
 			}
 
-			// If no archives were found in the buffer period, get the closest ones
-			if len(relevantArchives) == 0 {
-				var beforeArchive, afterArchive *ProcessedArchive
-
-				// Find the closest archive that ends before our target time
-				for i, archive := range processedArchives {
-					if archive.ToTime.Before(targetTime) {
-						beforeArchive = &processedArchives[i]
-						break // archives are sorted newest first
-					}
-				}
-
-				// Find the closest archive that starts after our target time
-				// Need to sort in reverse order for this
-				sortedArchives := make([]ProcessedArchive, len(processedArchives))
-				copy(sortedArchives, processedArchives)
-				sort.Slice(sortedArchives, func(i, j int) bool {
-					return sortedArchives[i].FromTime.Before(sortedArchives[j].FromTime)
-				})
-
-				for i, archive := range sortedArchives {
-					if archive.FromTime.After(targetTime) {
-						afterArchive = &sortedArchives[i]
-						break
-					}
-				}
-
-				// Add the archives before and after if they exist
-				if beforeArchive != nil {
-					relevantArchives = append(relevantArchives, *beforeArchive)
-				}
-				if afterArchive != nil {
-					relevantArchives = append(relevantArchives, *afterArchive)
-				}
-
-				// Log warning about the gap
-				if !targetTimeInArchive && beforeArchive != nil && afterArchive != nil {
-					fmt.Printf("\nWARNING: The target time %s falls within a gap between archives:\n", targetTime.Format("2006-01-02 15:04:05"))
-					fmt.Printf("  - Archive ending at:   %s\n", beforeArchive.ToTime.Format("2006-01-02 15:04:05"))
-					fmt.Printf("  - Next archive starts: %s\n", afterArchive.FromTime.Format("2006-01-02 15:04:05"))
-					fmt.Printf("  - Gap duration:        %s\n\n", afterArchive.FromTime.Sub(beforeArchive.ToTime))
+			// Find the archive that starts right after the target time
+			// Since we sorted newest first, we need to go backwards
+			for i := len(processedArchives) - 1; i >= 0; i-- {
+				if processedArchives[i].FromTime.After(targetTime) {
+					afterArchive = &processedArchives[i]
+					break
 				}
 			}
-		}
 
-		if len(relevantArchives) > 0 {
-			fmt.Printf("\nSelected %d archives that may contain logs around the target time.\n", len(relevantArchives))
-		} else {
-			fmt.Println("\nNo relevant archives found for the target time. Using recent logs only.")
+			// If we have archives before and after, check the gap
+			if beforeArchive != nil && afterArchive != nil {
+				// If the gap is relatively small (less than 2 hours), include both
+				gap := afterArchive.FromTime.Sub(beforeArchive.ToTime)
+				if gap < 2*time.Hour {
+					relevantArchives = append(relevantArchives, *beforeArchive, *afterArchive)
+				} else {
+					// Large gap, just use the one closest to target time
+					beforeDiff := targetTime.Sub(beforeArchive.ToTime)
+					afterDiff := afterArchive.FromTime.Sub(targetTime)
+					if beforeDiff < afterDiff {
+						relevantArchives = append(relevantArchives, *beforeArchive)
+					} else {
+						relevantArchives = append(relevantArchives, *afterArchive)
+					}
+
+					statusMsg := fmt.Sprintf("target time %s falls within a gap between archives",
+						targetTime.Format("2006-01-02 15:04:05"))
+					tui.UpdateStatus(statusCh, statusMsg)
+
+					beforeMsg := fmt.Sprintf("archive ending at: %s",
+						beforeArchive.ToTime.Format("2006-01-02 15:04:05"))
+					tui.UpdateStatus(statusCh, beforeMsg)
+
+					afterMsg := fmt.Sprintf("next archive starts: %s",
+						afterArchive.FromTime.Format("2006-01-02 15:04:05"))
+					tui.UpdateStatus(statusCh, afterMsg)
+
+					gapMsg := fmt.Sprintf("gap duration: %s",
+						afterArchive.FromTime.Sub(beforeArchive.ToTime))
+					tui.UpdateStatus(statusCh, gapMsg)
+				}
+			} else if beforeArchive != nil {
+				// Only have archive before target
+				relevantArchives = append(relevantArchives, *beforeArchive)
+			} else if afterArchive != nil {
+				// Only have archive after target
+				relevantArchives = append(relevantArchives, *afterArchive)
+			}
 		}
 	} else {
-		// If no target time, only get the most recent archive
+		// No target time specified, just use the most recent archive
 		if len(processedArchives) > 0 {
+			// Sort by time (newest first)
+			sort.Slice(processedArchives, func(i, j int) bool {
+				return processedArchives[i].ToTime.After(processedArchives[j].ToTime)
+			})
 			relevantArchives = append(relevantArchives, processedArchives[0])
-			fmt.Println("No target time specified. Using only the most recent archive.")
+			tui.UpdateStatus(statusCh, "no target time specified, using most recent archive")
 		}
 	}
 
-	// Sort the relevant archives by date (oldest first) for processing
-	sort.Slice(relevantArchives, func(i, j int) bool {
-		return relevantArchives[i].FromTime.Before(relevantArchives[j].FromTime)
-	})
+	// Report how many archives we're using
+	if len(relevantArchives) > 0 {
+		statusMsg := fmt.Sprintf("selected %d archives that may contain logs around the target time",
+			len(relevantArchives))
+		tui.UpdateStatus(statusCh, statusMsg)
+	} else {
+		tui.UpdateStatus(statusCh, "no relevant archives found for the target time, using recent logs only")
+		return 0, archiveDetails, nil
+	}
 
-	// Process selected archives in chronological order
+	// Download and process each relevant archive
 	for i, archive := range relevantArchives {
+		archiveUrl := archive.ArchiveItem.URL
+
+		// Create a temporary file for this archive
 		archiveFile := fmt.Sprintf("%s/%s-archive-%d.log", outputDir, appName, i)
 
-		// Update spinner with current progress
-		spinner.Update(fmt.Sprintf("Downloading archive %d/%d (%s - %s)",
+		// Status message for downloading
+		statusMsg := fmt.Sprintf("downloading archive %d/%d (%s - %s)",
 			i+1, len(relevantArchives),
 			archive.FromTime.Format("2006-01-02 15:04 MST"),
-			archive.ToTime.Format("2006-01-02 15:04 MST")))
+			archive.ToTime.Format("2006-01-02 15:04 MST"))
+		tui.UpdateStatus(statusCh, statusMsg)
 
-		// Download and extract archive
-		if err := downloadArchive(ctx, client, archive.ArchiveItem.URL, archiveFile); err != nil {
-			fmt.Fprintf(os.Stderr, "\nWarning: Failed to download archive %d: %v\n", i, err)
-			continue
+		// Download the archive
+		if err := downloadArchive(ctx, client, archiveUrl, archiveFile); err != nil {
+			return totalLines, archiveDetails, errors.Wrap(ctx, err, "download archive")
 		}
 
-		// Count lines in the archive
-		lineCount, err := countLines(archiveFile)
+		// Count lines in this archive
+		archiveLineCount, err := countLines(archiveFile)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: Failed to count lines in archive %d: %v\n", i, err)
-		} else {
-			totalLines += lineCount
-			archiveKey := fmt.Sprintf("%s to %s",
-				archive.FromTime.Format("2006-01-02 15:04"),
-				archive.ToTime.Format("2006-01-02 15:04"))
-			archiveDetails[archiveKey] = lineCount
+			return totalLines, archiveDetails, errors.Wrap(ctx, err, "count lines in archive")
 		}
 
-		// Append archive contents to main log file
-		spinner.Update(fmt.Sprintf("Processing archive %d/%d", i+1, len(relevantArchives)))
+		// Add to the total count
+		totalLines += archiveLineCount
+
+		// Add to details
+		archiveTimeKey := fmt.Sprintf("%s - %s",
+			archive.FromTime.Format("2006-01-02 15:04"),
+			archive.ToTime.Format("2006-01-02 15:04"))
+		archiveDetails[archiveTimeKey] = archiveLineCount
+
+		// Processing message
+		processingMsg := fmt.Sprintf("processing archive %d/%dr %s",
+			i+1, len(relevantArchives), appName)
+		tui.UpdateStatus(statusCh, processingMsg)
+
+		// Append to main output file
 		if err := appendFiles(archiveFile, mainOutputFile); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: Failed to append archive %d: %v\n", i, err)
+			return totalLines, archiveDetails, errors.Wrap(ctx, err, "append archive to output")
 		}
 
-		// Clean up archive file
+		// Clean up the archive file
 		os.Remove(archiveFile)
 	}
 
@@ -251,30 +262,29 @@ func downloadArchive(ctx context.Context, client *scalingo.Client, url, outputFi
 
 	// Run the command
 	if err := cmd.Run(); err != nil {
-		return errors.Wrap(ctx, err, "decompress archive with zcat")
+		return errors.Wrap(ctx, err, "decompress archive")
 	}
 
-	fmt.Printf("\nSuccessfully decompressed archive to %s\n", outputFile)
 	return nil
 }
 
-// Append file contents from source to destination
+// appendFiles appends the contents of sourceFile to destFile
 func appendFiles(sourceFile, destFile string) error {
-	// Open source file
+	// Open source file for reading
 	src, err := os.Open(sourceFile)
 	if err != nil {
 		return fmt.Errorf("open source file: %w", err)
 	}
 	defer src.Close()
 
-	// Open destination file in append mode
-	dst, err := os.OpenFile(destFile, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644)
+	// Open destination file for appending
+	dst, err := os.OpenFile(destFile, os.O_APPEND|os.O_WRONLY, 0644)
 	if err != nil {
 		return fmt.Errorf("open destination file: %w", err)
 	}
 	defer dst.Close()
 
-	// Append source content to destination
+	// Copy content from source to destination
 	if _, err := io.Copy(dst, src); err != nil {
 		return fmt.Errorf("append file content: %w", err)
 	}
