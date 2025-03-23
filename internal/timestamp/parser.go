@@ -167,122 +167,150 @@ func ValidateAndNormalize(ctx context.Context, input string) (string, error) {
 		}
 	}
 
+	// Handle date and time without "at" (e.g., "2025-03-22 12")
+	dateAtTimeRegex := regexp.MustCompile(`(?i)^(\d{4}-\d{2}-\d{2})\s+(\d{1,2}(:\d{1,2}(:\d{1,2})?)?)$`)
+	if matches := dateAtTimeRegex.FindStringSubmatch(input); len(matches) > 1 {
+		dateStr := matches[1]
+		timeStr := matches[2]
+
+		// Validate the date part
+		_, err := time.Parse(dateFormat, dateStr)
+		if err != nil {
+			return "", errors.Wrap(ctx, err, "parse date part")
+		}
+
+		// Handle different time formats
+		if strings.Count(timeStr, ":") == 0 {
+			// Just hour (e.g., "12")
+			hour, err := strconv.Atoi(timeStr)
+			if err != nil || hour < 0 || hour > 23 {
+				return "", errors.New(ctx, fmt.Sprintf("invalid hour: %s", timeStr))
+			}
+			return fmt.Sprintf("%s %02d:00:00", dateStr, hour), nil
+		} else if !isValidTimeFormat(timeStr) {
+			return "", errors.New(ctx, fmt.Sprintf("invalid time format: %s", timeStr))
+		}
+
+		// If we get here, the time format is valid, normalize it
+		return fmt.Sprintf("%s %s", dateStr, normalizeTimeFormat(timeStr)), nil
+	}
+
 	// If we get here, the format wasn't recognized
 	return "", errors.New(ctx, fmt.Sprintf("unrecognized timestamp format: %s", input))
 }
 
+var (
+	standardScalingoRegex   = regexp.MustCompile(`^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+ [+-]\d{4} \w+)`)
+	routerRegex             = regexp.MustCompile(`^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+ [+-]\d{4} \w+) \[router\]`)
+	jsonTimeRegex           = regexp.MustCompile(`"time":"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+[+-]\d{2}:\d{2})"`)
+	noTimezoneRegex         = regexp.MustCompile(`^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+)`)
+	isoRegex                = regexp.MustCompile(`(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)`)
+	standardDateTimeRegex   = regexp.MustCompile(`(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})`)
+	bracketedTimestampRegex = regexp.MustCompile(`\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]`)
+	appLogRegex             = regexp.MustCompile(`^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+) app\[\w+\.\d+\]:`)
+	rfc3339Regex            = regexp.MustCompile(`(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2})`)
+)
+
 // Parse parses a timestamp from a log line
 func Parse(ctx context.Context, line string) (time.Time, error) {
-	// Common formats to try
-	formats := []struct {
-		regex   *regexp.Regexp
-		format  string
-		extract func([]string) string
-	}{
-		// Standard Scalingo format: "2025-03-18 12:32:19.860718558 +0100 CET"
-		{
-			regex:  regexp.MustCompile(`^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+ [+-]\d{4} \w+)`),
-			format: "2006-01-02 15:04:05.999999999 -0700 MST",
-			extract: func(matches []string) string {
-				return matches[1]
-			},
-		},
-		// Router format with epoch timestamp: "2025-02-28 07:41:00.432084040 +0100 CET [router] method=POST"
-		{
-			regex:  regexp.MustCompile(`^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+ [+-]\d{4} \w+) \[router\]`),
-			format: "2006-01-02 15:04:05.999999999 -0700 MST",
-			extract: func(matches []string) string {
-				return matches[1]
-			},
-		},
-		// Scalingo router format with embedded JSON time: "time":"2025-02-28T13:00:01.690+00:00"
-		{
-			regex:  regexp.MustCompile(`"time":"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+[+-]\d{2}:\d{2})"`),
-			format: "2006-01-02T15:04:05.999999999-07:00",
-			extract: func(matches []string) string {
-				return matches[1]
-			},
-		},
-		// Format without timezone: "2025-03-18 12:32:19.860718558"
-		{
-			regex:  regexp.MustCompile(`^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+)`),
-			format: "2006-01-02 15:04:05.999999999",
-			extract: func(matches []string) string {
-				return matches[1]
-			},
-		},
-		// ISO8601 format: "2025-03-18T12:32:19Z"
-		{
-			regex:  regexp.MustCompile(`(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)`),
-			format: "2006-01-02T15:04:05Z",
-			extract: func(matches []string) string {
-				return matches[1]
-			},
-		},
-		// Standard date-time format: "2025-03-18 12:32:19"
-		{
-			regex:  regexp.MustCompile(`(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})`),
-			format: "2006-01-02 15:04:05",
-			extract: func(matches []string) string {
-				return matches[1]
-			},
-		},
-		// Log format with bracketed timestamp: "[2025-03-18 12:32:19]"
-		{
-			regex:  regexp.MustCompile(`\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]`),
-			format: "2006-01-02 15:04:05",
-			extract: func(matches []string) string {
-				return matches[1]
-			},
-		},
-		// Scalingo log format with app name: "2025-03-18 12:32:19.123456 app[web.1]:"
-		{
-			regex:  regexp.MustCompile(`^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+) app\[\w+\.\d+\]:`),
-			format: "2006-01-02 15:04:05.999999",
-			extract: func(matches []string) string {
-				return matches[1]
-			},
-		},
-		// RFC3339 format: "2025-03-18T12:32:19+01:00"
-		{
-			regex:  regexp.MustCompile(`(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2})`),
-			format: time.RFC3339,
-			extract: func(matches []string) string {
-				return matches[1]
-			},
-		},
+	// First, try the most common formats with compiled regexes
+
+	// Standard Scalingo format: "2025-03-18 12:32:19.860718558 +0100 CET"
+	if matches := standardScalingoRegex.FindStringSubmatch(line); len(matches) > 0 {
+		timestamp, err := time.Parse("2006-01-02 15:04:05.999999999 -0700 MST", matches[1])
+		if err == nil {
+			return timestamp, nil
+		}
 	}
 
-	// Try each format
-	for _, f := range formats {
-		matches := f.regex.FindStringSubmatch(line)
-		if len(matches) > 0 {
-			timestamp, err := time.Parse(f.format, f.extract(matches))
-			if err == nil {
-				return timestamp, nil
-			}
+	// Router format: "2025-02-28 07:41:00.432084040 +0100 CET [router] method=POST"
+	if matches := routerRegex.FindStringSubmatch(line); len(matches) > 0 {
+		timestamp, err := time.Parse("2006-01-02 15:04:05.999999999 -0700 MST", matches[1])
+		if err == nil {
+			return timestamp, nil
+		}
+	}
+
+	// JSON time format: "time":"2025-02-28T13:00:01.690+00:00"
+	if matches := jsonTimeRegex.FindStringSubmatch(line); len(matches) > 0 {
+		timestamp, err := time.Parse("2006-01-02T15:04:05.999999999-07:00", matches[1])
+		if err == nil {
+			return timestamp, nil
+		}
+	}
+
+	// Format without timezone: "2025-03-18 12:32:19.860718558"
+	if matches := noTimezoneRegex.FindStringSubmatch(line); len(matches) > 0 {
+		timestamp, err := time.Parse("2006-01-02 15:04:05.999999999", matches[1])
+		if err == nil {
+			return timestamp, nil
+		}
+	}
+
+	// ISO8601 format: "2025-03-18T12:32:19Z"
+	if matches := isoRegex.FindStringSubmatch(line); len(matches) > 0 {
+		timestamp, err := time.Parse("2006-01-02T15:04:05Z", matches[1])
+		if err == nil {
+			return timestamp, nil
+		}
+	}
+
+	// Standard date-time format: "2025-03-18 12:32:19"
+	if matches := standardDateTimeRegex.FindStringSubmatch(line); len(matches) > 0 {
+		timestamp, err := time.Parse("2006-01-02 15:04:05", matches[1])
+		if err == nil {
+			return timestamp, nil
+		}
+	}
+
+	// Log format with bracketed timestamp: "[2025-03-18 12:32:19]"
+	if matches := bracketedTimestampRegex.FindStringSubmatch(line); len(matches) > 0 {
+		timestamp, err := time.Parse("2006-01-02 15:04:05", matches[1])
+		if err == nil {
+			return timestamp, nil
+		}
+	}
+
+	// Scalingo log format with app name: "2025-03-18 12:32:19.123456 app[web.1]:"
+	if matches := appLogRegex.FindStringSubmatch(line); len(matches) > 0 {
+		timestamp, err := time.Parse("2006-01-02 15:04:05.999999", matches[1])
+		if err == nil {
+			return timestamp, nil
+		}
+	}
+
+	// RFC3339 format: "2025-03-18T12:32:19+01:00"
+	if matches := rfc3339Regex.FindStringSubmatch(line); len(matches) > 0 {
+		timestamp, err := time.Parse(time.RFC3339, matches[1])
+		if err == nil {
+			return timestamp, nil
 		}
 	}
 
 	// Try to extract date and time components separately if standard formats fail
-	isDate := func(s string) bool {
-		_, err := time.Parse("2006-01-02", s)
-		return err == nil
-	}
-
-	isTime := func(s string) bool {
-		_, err := time.Parse("15:04:05", s)
-		return err == nil
-	}
-
 	var dateStr, timeStr string
 	words := strings.Fields(line)
+
+	// Fast path to check for date and time patterns
 	for _, word := range words {
 		word = strings.Trim(word, "[](){},;:\"'")
-		if isDate(word) {
-			dateStr = word
-		} else if isTime(word) {
-			timeStr = word
+
+		// Check for date pattern: YYYY-MM-DD
+		if len(word) == 10 && word[4] == '-' && word[7] == '-' {
+			_, err := time.Parse("2006-01-02", word)
+			if err == nil {
+				dateStr = word
+				continue
+			}
+		}
+
+		// Check for time pattern: HH:MM:SS
+		if len(word) == 8 && word[2] == ':' && word[5] == ':' {
+			_, err := time.Parse("15:04:05", word)
+			if err == nil {
+				timeStr = word
+				continue
+			}
 		}
 	}
 
@@ -310,21 +338,21 @@ func ParseSearch(ctx context.Context, timestampStr string) (time.Time, error) {
 		return time.Time{}, errors.Wrap(ctx, err, "parse normalized timestamp")
 	}
 
-	// If no timezone was specified in the input, explicitly set it to Europe/Paris
+	// Check if the input didn't specify a timezone
 	if normalized == t.Format(dateTimeFormat) {
-		// Load Europe/Paris location
+		// Try to load Europe/Paris location (commonly used in Scalingo logs)
 		loc, err := time.LoadLocation("Europe/Paris")
 		if err != nil {
 			// Fallback to local timezone if location loading fails
-			t = t.In(time.Local)
-		} else {
-			// Set the timezone to Europe/Paris
-			t = time.Date(
-				t.Year(), t.Month(), t.Day(),
-				t.Hour(), t.Minute(), t.Second(), t.Nanosecond(),
-				loc,
-			)
+			loc = time.Local
 		}
+
+		// Create a new time value in the target timezone to properly handle DST
+		t = time.Date(
+			t.Year(), t.Month(), t.Day(),
+			t.Hour(), t.Minute(), t.Second(), t.Nanosecond(),
+			loc,
+		)
 	}
 
 	return t, nil

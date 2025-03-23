@@ -1,0 +1,52 @@
+linters:
+  enable:
+    # Default linters
+    - errcheck      # Check for unchecked errors
+    - gosimple      # Suggests code simplifications
+    - govet         # Reports suspicious constructs
+    - ineffassign   # Detects unused assignments
+    - staticcheck   # Comprehensive static analyzer
+    - unused        # Finds unused code
+    
+    # Additional recommended linters
+    - bodyclose     # Checks HTTP response bodies are closed
+    - contextcheck  # Checks context propagation
+    - dupl          # Finds duplicate code
+    - errname       # Validates error naming conventions
+    - errorlint     # Checks error handling patterns
+    - exhaustive    # Checks switch statements
+    - gofmt         # Enforces standard formatting
+    - goimports     # Checks import formatting 
+    - misspell      # Finds commonly misspelled words
+    - nilnil        # Checks for nil error returns with nil values
+    - prealloc      # Suggests slice preallocation
+    - revive        # Drop-in replacement for golint
+    - unconvert     # Removes unnecessary type conversions
+    - unparam       # Reports unused parameters
+
+linters-settings:
+  dupl:
+    threshold: 100
+  errcheck:
+    check-type-assertions: true
+  unused:
+    check-exported: false
+
+issues:
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - dupl
+        - errcheck
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  
+  # Exclude unused exported codes
+  exclude:
+    - "exported (function|method|type|const|var) (.+) is unused"
+
+run:
+  timeout: 5m
+  issues-exit-code: 1
+  exclude-dirs:
+    - vendor

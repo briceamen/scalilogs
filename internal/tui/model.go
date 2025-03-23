@@ -2,7 +2,6 @@ package tui
 
 import (
 	"fmt"
-	"math/rand"
 	"strings"
 	"time"
 
@@ -35,6 +34,7 @@ func NewAnimatedText(text string, interval time.Duration) AnimatedText {
 }
 
 // UpdateAnimation updates the animated text by changing the number of dots
+// and occasionally changing the message entirely
 func (a *AnimatedText) UpdateAnimation() {
 	if time.Since(a.lastUpdate) < a.interval {
 		return
@@ -43,11 +43,14 @@ func (a *AnimatedText) UpdateAnimation() {
 	// Update dot count
 	a.dotCount = (a.dotCount + 1) % (a.maxDots + 1)
 
+	// Determine which text to use as base
+	textBase := a.baseText
+
 	// Create the appropriate number of dots
 	dots := strings.Repeat(".", a.dotCount)
 
 	// Combine base text with dots
-	a.currentText = a.baseText + dots
+	a.currentText = textBase + dots
 
 	a.lastUpdate = time.Now()
 }
@@ -88,12 +91,6 @@ var (
 			Foreground(lipgloss.Color("#04B575"))
 )
 
-// ProgressEntry represents a line in the progress log
-type ProgressEntry struct {
-	Message string
-	Value   int
-}
-
 // Model represents the Bubbletea state for the log extraction process
 type Model struct {
 	spinner           spinner.Model
@@ -109,65 +106,14 @@ type Model struct {
 	elapsedTime       string
 	isFinished        bool
 	error             error
-	// Store progress entries to display in View
-	progressEntries []ProgressEntry
 	// Summary content to display after finishing
 	summary []string
 	// Animated welcome text
 	animatedText AnimatedText
-}
-
-// GetRandomWorkingMessage returns a random funny "we are working on it" message
-func GetRandomWorkingMessage() string {
-	messages := []string{
-		"Feeding the hamster that powers the server",
-		"Convincing the logs to reveal themselves",
-		"Herding digital cats into orderly rows",
-		"Untangling the spaghetti of your logs",
-		"Brewing coffee for the overworked log parser",
-		"Teaching the AI to read your logs faster",
-		"Bargaining with the database for your data",
-		"Converting coffee to log entries",
-		"Politely asking your logs to form a queue",
-		"Performing log wizardry, please wait",
-		"Waking up the sleeping server hamsters",
-		"Calculating the meaning of life and your logs",
-		"Coaxing logs from their digital hiding places",
-		"Playing hide and seek with your log files",
-		"Translating binary into something useful",
-		"Consulting the oracle of log wisdom",
-		"Applying duck tape to broken log pipes",
-		"Searching for logs in all the right places",
-		"Telling the server that this is very important",
-		"Reticulating splines and log entries",
-		"Solving complex log algorithms with a crayon",
-		"Interpreting ancient log hieroglyphics",
-		"Mining for precious log nuggets",
-		"Luring shy logs out of their digital caves",
-		"Performing inception on nested log structures",
-		"Bribing the firewall to let your logs through",
-		"Recruiting an army of log-sniffing squirrels",
-		"Deciphering cryptic server whispers",
-		"Knitting a beautiful sweater from log threads",
-		"Asking logs politely to organize themselves",
-		"Deploying elite log commandos to retrieve data",
-		"Massaging stubborn logs until they cooperate",
-		"Untangling the web of log dependencies",
-		"Negotiating peace treaties between conflicting logs",
-		"Telepathically communicating with the log spirits",
-		"Persuading logs to reveal their deepest secrets",
-		"Training carrier pigeons to fetch remote logs",
-		"Applying quantum mechanics to solve log paradoxes",
-		"Hunting for the legendary golden log entry",
-		"Excavating data from the archaeological log layers",
-	}
-
-	// Seed the random number generator
-	randomSource := rand.NewSource(time.Now().UnixNano())
-	randomGenerator := rand.New(randomSource)
-
-	// Pick a random message
-	return messages[randomGenerator.Intn(len(messages))]
+	// Store the full finish message for detailed reporting
+	msg status.FinishMessage
+	// Track the last status update time
+	lastStatusUpdate time.Time
 }
 
 // NewModel creates a new Bubbletea model
@@ -177,17 +123,18 @@ func NewModel(appName, targetTimestamp string) Model {
 	s.Style = spinnerStyle
 
 	// Create animated text with random message
-	animatedText := NewAnimatedText(GetRandomWorkingMessage(), 250*time.Millisecond)
+	// Dot animation plays every 250ms, but we'll use 2 seconds for message changes
+	animatedText := NewAnimatedText(status.GetRandomWorkingMessage(), 250*time.Millisecond)
 
 	return Model{
-		spinner:         s,
-		status:          "Starting...",
-		appName:         appName,
-		targetTimestamp: targetTimestamp,
-		archiveDetails:  make(map[string]int),
-		progressEntries: []ProgressEntry{},
-		summary:         []string{},
-		animatedText:    animatedText,
+		spinner:          s,
+		status:           "Starting...",
+		appName:          appName,
+		targetTimestamp:  targetTimestamp,
+		archiveDetails:   make(map[string]int),
+		summary:          []string{},
+		animatedText:     animatedText,
+		lastStatusUpdate: time.Now(),
 	}
 }
 
@@ -209,36 +156,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		})
 
 	case tea.KeyMsg:
-		if msg.String() == "ctrl+c" || msg.String() == "q" && m.isFinished {
+		// Always allow quitting with ctrl+c
+		if msg.String() == "ctrl+c" {
+			return m, tea.Quit
+		}
+
+		// Allow quitting with q once finished or if there's an error
+		if msg.String() == "q" && (m.isFinished || m.error != nil) {
 			return m, tea.Quit
 		}
 		return m, nil
 
 	case status.Message:
-		m.status = msg.Status
-
-		// Store progress details for display in View
-		if strings.Contains(msg.Status, "fetched") ||
-			strings.Contains(msg.Status, "sorted") ||
-			strings.Contains(msg.Status, "filtered") {
-
-			entry := ProgressEntry{
-				Message: msg.Status,
-				Value:   msg.Value,
-			}
-			m.progressEntries = append(m.progressEntries, entry)
-
-			switch {
-			case strings.Contains(msg.Status, "live logs"):
-				m.liveLogsCount = msg.Value
-			case strings.Contains(msg.Status, "archive logs"):
-				m.archiveLogsCount = msg.Value
-			case strings.Contains(msg.Status, "total lines"):
-				m.totalLines = msg.Value
-			case strings.Contains(msg.Status, "filtered logs"):
-				m.filteredLineCount = msg.Value
-			}
+		// Update status fields based on message
+		switch {
+		case strings.Contains(msg.Status, "live logs"):
+			m.liveLogsCount = msg.Value
+		case strings.Contains(msg.Status, "archive logs"):
+			m.archiveLogsCount = msg.Value
+		case strings.Contains(msg.Status, "total lines"):
+			m.totalLines = msg.Value
+		case strings.Contains(msg.Status, "filtered logs"):
+			m.filteredLineCount = msg.Value
 		}
+
+		// Update animated text with status message
+		m.status = msg.Status
 
 		return m, tea.Batch(
 			m.spinner.Tick,
@@ -258,6 +201,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.filteredLineCount = msg.FilteredLineCount
 		m.archiveDetails = msg.ArchiveDetails
 		m.elapsedTime = msg.ElapsedTime
+		// Store the complete message for detailed reporting
+		m.msg = msg
 
 		// Create summary content for display in View
 		m.summary = append(m.summary, summaryHeaderStyle.Render("--- Logs Fetch Summary ---"))
@@ -276,7 +221,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.summary = append(m.summary, fmt.Sprintf("- Final filtered logs: %d lines", m.filteredLineCount))
 		}
 		m.summary = append(m.summary, fmt.Sprintf("- Total processing time: %s", m.elapsedTime))
-		m.summary = append(m.summary, "------------------------")
+
+		// Add detailed timing information in chronological order of execution
+		m.summary = append(m.summary, "  Processing breakdown:")
+		if m.msg.ArchiveSelectionTime != "" {
+			m.summary = append(m.summary, fmt.Sprintf("  - Archive selection time: %s", m.msg.ArchiveSelectionTime))
+		}
+		if m.msg.FetchArchiveTime != "" {
+			m.summary = append(m.summary, fmt.Sprintf("  - Archive logs fetch time: %s", m.msg.FetchArchiveTime))
+		}
+		if m.msg.FetchLiveTime != "" {
+			m.summary = append(m.summary, fmt.Sprintf("  - Live logs fetch time: %s", m.msg.FetchLiveTime))
+		}
+		if m.msg.SortTime != "" {
+			m.summary = append(m.summary, fmt.Sprintf("  - Sort time: %s", m.msg.SortTime))
+		}
+		if m.msg.FilterTime != "" {
+			m.summary = append(m.summary, fmt.Sprintf("  - Filter time: %s", m.msg.FilterTime))
+		}
+
+		// Use the same style for bottom separator as the header
+		m.summary = append(m.summary, summaryHeaderStyle.Render("------------------------"))
 
 		return m, tea.Quit
 
@@ -293,29 +258,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // View renders the UI
 func (m Model) View() string {
 	if m.error != nil {
-		return errorStyle.Render(fmt.Sprintf("Error: %v", m.error))
+		// Clean error message for display - strip duplicate info
+		errMsg := m.error.Error()
+
+		return errorStyle.Render(fmt.Sprintf("Error: %s\n\nPress q to exit", errMsg))
 	}
 
 	// If finished, return the full summary
 	if m.isFinished {
-		return strings.Join(m.summary, "\n")
+		// If outputFile is empty, this suggests there was an error but it wasn't properly captured
+		if m.outputFile == "" {
+			return errorStyle.Render("Error: Log extraction failed, but no specific error was captured. Check your client configuration or authentication.\n\nPress q to exit")
+		}
+		return strings.Join(m.summary, "\n") + "\n\nPress q to exit"
 	}
 
 	// For ongoing operations, format progress
 	var output strings.Builder
 
-	// Display animated title instead of static title
+	// Display animated title
 	output.WriteString(titleStyle.Render(m.animatedText.GetText()) + "\n")
-
-	// Display progress entries
-	for _, entry := range m.progressEntries {
-		// Only show the value if it's greater than zero
-		if entry.Value > 0 {
-			fmt.Fprintf(&output, "%s (%d lines)\n", stepStyle.Render(entry.Message), entry.Value)
-		} else {
-			fmt.Fprintf(&output, "%s\n", stepStyle.Render(entry.Message))
-		}
-	}
 
 	// Add the current status with spinner
 	spinner := m.spinner.View()

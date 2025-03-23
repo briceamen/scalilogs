@@ -8,13 +8,14 @@ import (
 	"strings"
 
 	"github.com/Scalingo/go-utils/errors/v2"
+	"github.com/briceamen/scalilogs/internal/config"
 	"github.com/briceamen/scalilogs/internal/timestamp"
 	"github.com/briceamen/scalilogs/pkg/scalingo"
 )
 
 // RunSurveyFirstPart runs the first part of the interactive survey without needing a client
 // It only collects app name, environment and region
-func RunSurveyFirstPart(ctx context.Context) (string, string, string, error) {
+func RunSurveyFirstPart(ctx context.Context, regions map[string][]config.Region) (string, string, string, error) {
 	var appName string
 	var env string
 	var region string
@@ -40,8 +41,11 @@ func RunSurveyFirstPart(ctx context.Context) (string, string, string, error) {
 		return "", "", "", errors.Wrap(ctx, err, "read environment choice")
 	}
 
+	trimmedChoice := strings.TrimSpace(envChoice)
 	// Set environment based on choice
-	switch strings.TrimSpace(envChoice) {
+	switch trimmedChoice {
+	case "", "1": // Empty input or "1" both select the default option
+		env = scalingo.EnvProduction
 	case "2":
 		env = scalingo.EnvStaging
 	case "3":
@@ -50,58 +54,47 @@ func RunSurveyFirstPart(ctx context.Context) (string, string, string, error) {
 		env = scalingo.EnvProduction
 	}
 
-	// Skip region selection for dev environment
-	if env != scalingo.EnvDev {
-		// Use predefined regions instead of making API call
-		var regions []scalingo.Region
+	// Based on the environment, use the possible regions in the app config (production have two regions)
+	region = ""
+	for _, r := range regions[env] {
+		if r.Default {
+			region = r.Name
+			break
+		}
+	}
 
-		// Hard-code the regions based on environment to avoid API call
-		if env == scalingo.EnvProduction {
-			regions = []scalingo.Region{
-				{Name: "osc-fr1", DisplayName: "Paris - Outscale"},
-				{Name: "osc-secnum-fr1", DisplayName: "Paris - SecNumCloud - Outscale"},
+	// If we're in production environment, we should offer a choice between the two regions
+	if env == scalingo.EnvProduction && len(regions[env]) > 1 {
+		fmt.Println("\nPlease select a region:")
+		for i, r := range regions[env] {
+			defaultText := ""
+			if r.Default {
+				defaultText = " (default)"
 			}
-		} else if env == scalingo.EnvStaging {
-			regions = []scalingo.Region{
-				{Name: "osc-st-fr1", DisplayName: "Paris - Outscale (Staging)"},
-			}
+			fmt.Printf("  %d. %s (%s)%s\n", i+1, r.DisplayName, r.Name, defaultText)
 		}
 
-		if len(regions) == 0 {
-			fmt.Printf("No regions defined for %s. Using default region: %s\n", env, scalingo.RegionOscFr1)
-			region = scalingo.RegionOscFr1
-		} else if len(regions) == 1 {
-			// Automatically select the only available region
-			region = regions[0].Name
-			fmt.Printf("Only one region available: %s (%s). Automatically selected.\n", regions[0].DisplayName, regions[0].Name)
+		fmt.Printf("Enter your choice (1-%d): ", len(regions[env]))
+		regionChoice, err := reader.ReadString('\n')
+		if err != nil {
+			return "", "", "", errors.Wrap(ctx, err, "read region choice")
+		}
+
+		trimmedRegionChoice := strings.TrimSpace(regionChoice)
+		regionChoiceInt := 0
+
+		// Empty input selects default region
+		if trimmedRegionChoice == "" {
+			// Keep using default region already set above
 		} else {
-			fmt.Println("\nPlease select a region:")
-
-			// Create a map of option number to region
-			regionOptions := make(map[int]string)
-			for i, r := range regions {
-				fmt.Printf("  %d. %s (%s)\n", i+1, r.DisplayName, r.Name)
-				regionOptions[i+1] = r.Name
-			}
-
-			// Ask for region selection
-			fmt.Printf("Enter your choice (1-%d): ", len(regions))
-			regionChoice, err := reader.ReadString('\n')
-			if err != nil {
-				return "", "", "", errors.Wrap(ctx, err, "read region choice")
-			}
-
-			regionChoiceInt := 0
-			fmt.Sscanf(strings.TrimSpace(regionChoice), "%d", &regionChoiceInt)
-
-			// If invalid choice, use first region
-			if regionChoiceInt < 1 || regionChoiceInt > len(regions) {
-				fmt.Println("Invalid choice. Using first region.")
-				region = regions[0].Name
-			} else {
-				region = regionOptions[regionChoiceInt]
+			fmt.Sscanf(trimmedRegionChoice, "%d", &regionChoiceInt)
+			// If valid choice, use selected region
+			if regionChoiceInt >= 1 && regionChoiceInt <= len(regions[env]) {
+				region = regions[env][regionChoiceInt-1].Name
 			}
 		}
+	} else if region != "" {
+		fmt.Printf("Using region: %s\n", region)
 	}
 
 	return appName, env, region, nil
@@ -109,7 +102,7 @@ func RunSurveyFirstPart(ctx context.Context) (string, string, string, error) {
 
 // RunSurveySecondPart runs the second part of the interactive survey after a client has been created
 // It verifies the app exists and collects timestamp and filter preferences
-func RunSurveySecondPart(ctx context.Context, client *scalingo.ScalingoClient, appName string, env string, region string) (string, int, int, error) {
+func RunSurveySecondPart(ctx context.Context, client *scalingo.Client, appName string, env string, region string) (string, int, int, error) {
 	var timestampInput string
 	var lineCount int
 	var hoursCount int
@@ -125,11 +118,11 @@ func RunSurveySecondPart(ctx context.Context, client *scalingo.ScalingoClient, a
 
 	// Ask for timestamp
 	fmt.Println("\nAround what time should we search? Please use one of the following formats:")
-	fmt.Println("  - YYYY-MM-DD HH:MM:SS (e.g., 2023-06-15 14:30:00)")
-	fmt.Println("  - Today at HH:MM:SS (e.g., Today at 14:30:00)")
-	fmt.Println("  - Yesterday at HH:MM:SS (e.g., Yesterday at 14:30:00)")
-	fmt.Println("  - Monday/Tuesday/etc. at HH:MM:SS (e.g., Monday at 14:30:00)")
-	fmt.Println("  - now (current time)")
+	fmt.Println("  • Absolute date: 2023-06-15 14:30:00")
+	fmt.Println("  • With 'at': 2025-03-22 at 12:00 or 2025-03-22 at 12")
+	fmt.Println("  • Relative day: Today at 14:30 or Yesterday at 14:30")
+	fmt.Println("  • Weekday: Monday at 14:30")
+	fmt.Println("  • Current time: now")
 	fmt.Print("Timestamp: ")
 	timestampInput, err = reader.ReadString('\n')
 	if err != nil {
@@ -153,37 +146,8 @@ func RunSurveySecondPart(ctx context.Context, client *scalingo.ScalingoClient, a
 	}
 
 	choice := strings.TrimSpace(choiceStr)
-
-	if choice == "2" {
-		// Ask for hours count
-		fmt.Print("\nHow many hours do you want before and after the timestamp? ")
-		_, err = fmt.Scanf("%d", &hoursCount)
-		if err != nil {
-			// Try reading as string and convert
-			hoursStr, err := reader.ReadString('\n')
-			if err != nil {
-				return "", 0, 0, errors.Wrap(ctx, err, "read hours count")
-			}
-
-			trimmed := strings.TrimSpace(hoursStr)
-			if trimmed == "" {
-				// Empty input - use default
-				hoursCount = 0 // Will be set to default below
-			} else {
-				_, err = fmt.Sscanf(trimmed, "%d", &hoursCount)
-				if err != nil {
-					// Not returning error, just use default value
-					hoursCount = 0 // Will be set to default below
-				}
-			}
-		}
-
-		// Default to 1 hour if no valid input
-		if hoursCount <= 0 {
-			hoursCount = 1
-			fmt.Println("Using default hours count: 1 hour before and after")
-		}
-	} else {
+	// Empty input selects option 1 (Lines)
+	if choice == "" || choice == "1" {
 		// Ask for line count
 		fmt.Print("\nHow many lines do you want before and after the timestamp? ")
 		_, err = fmt.Scanf("%d", &lineCount)
@@ -212,13 +176,42 @@ func RunSurveySecondPart(ctx context.Context, client *scalingo.ScalingoClient, a
 			lineCount = 100
 			fmt.Println("Using default line count: 100 lines before and after")
 		}
+	} else if choice == "2" {
+		// Ask for hours count
+		fmt.Print("\nHow many hours do you want before and after the timestamp? ")
+		_, err = fmt.Scanf("%d", &hoursCount)
+		if err != nil {
+			// Try reading as string and convert
+			hoursStr, err := reader.ReadString('\n')
+			if err != nil {
+				return "", 0, 0, errors.Wrap(ctx, err, "read hours count")
+			}
+
+			trimmed := strings.TrimSpace(hoursStr)
+			if trimmed == "" {
+				// Empty input - use default
+				hoursCount = 0 // Will be set to default below
+			} else {
+				_, err = fmt.Sscanf(trimmed, "%d", &hoursCount)
+				if err != nil {
+					// Not returning error, just use default value
+					hoursCount = 0 // Will be set to default below
+				}
+			}
+		}
+
+		// Default to 1 hour if no valid input
+		if hoursCount <= 0 {
+			hoursCount = 1
+			fmt.Println("Using default hours count: 1 hour before and after")
+		}
 	}
 
 	return normalizedTimestamp, lineCount, hoursCount, nil
 }
 
 // RunSurvey runs an interactive survey to collect user input
-func RunSurvey(ctx context.Context, client *scalingo.ScalingoClient) (string, string, int, int, string, string, error) {
+func RunSurvey(ctx context.Context, client *scalingo.Client) (string, string, int, int, string, string, error) {
 	var appName string
 	var timestampInput string
 	var lineCount int
@@ -247,8 +240,11 @@ func RunSurvey(ctx context.Context, client *scalingo.ScalingoClient) (string, st
 		return "", "", 0, 0, "", "", errors.Wrap(ctx, err, "read environment choice")
 	}
 
+	trimmedChoice := strings.TrimSpace(envChoice)
 	// Set environment based on choice
-	switch strings.TrimSpace(envChoice) {
+	switch trimmedChoice {
+	case "", "1": // Empty input or "1" both select the default option
+		env = scalingo.EnvProduction
 	case "2":
 		env = scalingo.EnvStaging
 	case "3":
@@ -259,12 +255,25 @@ func RunSurvey(ctx context.Context, client *scalingo.ScalingoClient) (string, st
 
 	// Skip region selection for dev environment
 	if env != scalingo.EnvDev {
-		// Fetch available regions for the environment
+		// Try to get regions from the client first
 		regions, err := client.GetRegions(ctx)
 		if err != nil {
-			fmt.Printf("Warning: Could not fetch regions: %v\n", err)
-			fmt.Printf("Using default region: %s\n", scalingo.RegionOscFr1)
-			region = scalingo.RegionOscFr1
+			// If client.GetRegions fails, try from cache
+			fmt.Printf("Warning: Could not fetch regions from API: %v\n", err)
+			fmt.Println("Attempting to load regions from cache...")
+
+			regions, err = config.LoadRegionsFromCache(ctx, env, "")
+			if err != nil {
+				fmt.Printf("Warning: Could not load regions from cache: %v\n", err)
+			}
+		}
+
+		if len(regions) == 0 {
+			return "", "", 0, 0, "", "", errors.New(ctx, "no regions found for environment")
+		} else if len(regions) == 1 {
+			// Automatically select the only available region
+			region = regions[0].Name
+			fmt.Printf("Only one region available: %s (%s). Automatically selected.\n", regions[0].DisplayName, regions[0].Name)
 		} else {
 			fmt.Println("\nPlease select a region:")
 
@@ -275,31 +284,27 @@ func RunSurvey(ctx context.Context, client *scalingo.ScalingoClient) (string, st
 				regionOptions[i+1] = r.Name
 			}
 
-			// If no regions were found, use default
-			if len(regions) == 0 {
-				fmt.Printf("No regions found. Using default region: %s\n", scalingo.RegionOscFr1)
-				region = scalingo.RegionOscFr1
-			} else if len(regions) == 1 {
-				// Automatically select the only available region
+			// Ask for region selection
+			fmt.Printf("Enter your choice (1-%d): ", len(regions))
+			regionChoice, err := reader.ReadString('\n')
+			if err != nil {
+				return "", "", 0, 0, "", "", errors.Wrap(ctx, err, "read region choice")
+			}
+
+			trimmedRegionChoice := strings.TrimSpace(regionChoice)
+			regionChoiceInt := 0
+
+			// Empty input selects the first region
+			if trimmedRegionChoice == "" {
 				region = regions[0].Name
-				fmt.Printf("Only one region available: %s (%s). Automatically selected.\n", regions[0].DisplayName, regions[0].Name)
 			} else {
-				// Ask for region selection
-				fmt.Printf("Enter your choice (1-%d): ", len(regions))
-				regionChoice, err := reader.ReadString('\n')
-				if err != nil {
-					return "", "", 0, 0, "", "", errors.Wrap(ctx, err, "read region choice")
-				}
-
-				regionChoiceInt := 0
-				fmt.Sscanf(strings.TrimSpace(regionChoice), "%d", &regionChoiceInt)
-
-				// If invalid choice, use first region
-				if regionChoiceInt < 1 || regionChoiceInt > len(regions) {
+				fmt.Sscanf(trimmedRegionChoice, "%d", &regionChoiceInt)
+				// If valid choice, use selected region
+				if regionChoiceInt >= 1 && regionChoiceInt <= len(regions) {
+					region = regionOptions[regionChoiceInt]
+				} else {
 					fmt.Println("Invalid choice. Using first region.")
 					region = regions[0].Name
-				} else {
-					region = regionOptions[regionChoiceInt]
 				}
 			}
 		}
@@ -314,11 +319,11 @@ func RunSurvey(ctx context.Context, client *scalingo.ScalingoClient) (string, st
 
 	// Ask for timestamp
 	fmt.Println("\nAround what time should we search? Please use one of the following formats:")
-	fmt.Println("  - YYYY-MM-DD HH:MM:SS (e.g., 2023-06-15 14:30:00)")
-	fmt.Println("  - Today at HH:MM:SS (e.g., Today at 14:30:00)")
-	fmt.Println("  - Yesterday at HH:MM:SS (e.g., Yesterday at 14:30:00)")
-	fmt.Println("  - Monday/Tuesday/etc. at HH:MM:SS (e.g., Monday at 14:30:00)")
-	fmt.Println("  - now (current time)")
+	fmt.Println("  • Absolute date: 2023-06-15 14:30:00")
+	fmt.Println("  • With 'at': 2025-03-22 at 12:00 or 2025-03-22 at 12")
+	fmt.Println("  • Relative day: Today at 14:30 or Yesterday at 14:30")
+	fmt.Println("  • Weekday: Monday at 14:30")
+	fmt.Println("  • Current time: now")
 	fmt.Print("Timestamp: ")
 	timestampInput, err = reader.ReadString('\n')
 	if err != nil {
@@ -342,37 +347,8 @@ func RunSurvey(ctx context.Context, client *scalingo.ScalingoClient) (string, st
 	}
 
 	choice := strings.TrimSpace(choiceStr)
-
-	if choice == "2" {
-		// Ask for hours count
-		fmt.Print("\nHow many hours do you want before and after the timestamp? ")
-		_, err = fmt.Scanf("%d", &hoursCount)
-		if err != nil {
-			// Try reading as string and convert
-			hoursStr, err := reader.ReadString('\n')
-			if err != nil {
-				return "", "", 0, 0, "", "", errors.Wrap(ctx, err, "read hours count")
-			}
-
-			trimmed := strings.TrimSpace(hoursStr)
-			if trimmed == "" {
-				// Empty input - use default
-				hoursCount = 0 // Will be set to default below
-			} else {
-				_, err = fmt.Sscanf(trimmed, "%d", &hoursCount)
-				if err != nil {
-					// Not returning error, just use default value
-					hoursCount = 0 // Will be set to default below
-				}
-			}
-		}
-
-		// Default to 1 hour if no valid input
-		if hoursCount <= 0 {
-			hoursCount = 1
-			fmt.Println("Using default hours count: 1 hour before and after")
-		}
-	} else {
+	// Empty input selects option 1 (Lines)
+	if choice == "" || choice == "1" {
 		// Ask for line count
 		fmt.Print("\nHow many lines do you want before and after the timestamp? ")
 		_, err = fmt.Scanf("%d", &lineCount)
@@ -400,6 +376,35 @@ func RunSurvey(ctx context.Context, client *scalingo.ScalingoClient) (string, st
 		if lineCount <= 0 {
 			lineCount = 100
 			fmt.Println("Using default line count: 100 lines before and after")
+		}
+	} else if choice == "2" {
+		// Ask for hours count
+		fmt.Print("\nHow many hours do you want before and after the timestamp? ")
+		_, err = fmt.Scanf("%d", &hoursCount)
+		if err != nil {
+			// Try reading as string and convert
+			hoursStr, err := reader.ReadString('\n')
+			if err != nil {
+				return "", "", 0, 0, "", "", errors.Wrap(ctx, err, "read hours count")
+			}
+
+			trimmed := strings.TrimSpace(hoursStr)
+			if trimmed == "" {
+				// Empty input - use default
+				hoursCount = 0 // Will be set to default below
+			} else {
+				_, err = fmt.Sscanf(trimmed, "%d", &hoursCount)
+				if err != nil {
+					// Not returning error, just use default value
+					hoursCount = 0 // Will be set to default below
+				}
+			}
+		}
+
+		// Default to 1 hour if no valid input
+		if hoursCount <= 0 {
+			hoursCount = 1
+			fmt.Println("Using default hours count: 1 hour before and after")
 		}
 	}
 

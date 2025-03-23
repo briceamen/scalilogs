@@ -60,34 +60,33 @@ When run without flags, the tool will guide you through the log extraction proce
 
 The tool supports various timestamp formats:
 
-- Standard date and time formats:
-  - `YYYY-MM-DD HH:MM:SS` (e.g., `2023-06-15 14:30:00`)
-  - `YYYY/MM/DD HH:MM:SS` (e.g., `2023/06/15 14:30:00`)
-  - `YYYY/MM/DD HH:MM` (e.g., `2023/06/15 14:30`)
-  - `DD/MM/YYYY HH:MM:SS` (e.g., `15/06/2023 14:30:00`)
-  - `MM/DD/YYYY HH:MM:SS` (e.g., `06/15/2023 14:30:00`)
-  - ISO 8601: `YYYY-MM-DDThh:mm:ss` (e.g., `2023-06-15T14:30:00`)
-  - `YYYY-MM-DD HH:MM` (e.g., `2023-06-15 14:30`)
+- **Absolute date**: 
+  - `2023-06-15 14:30:00`
+  - `2023/06/15 14:30:00`
+  - `2023/06/15 14:30`
+  - `15/06/2023 14:30:00` (DD/MM/YYYY)
+  - `06/15/2023 14:30:00` (MM/DD/YYYY)
+  - `2023-06-15T14:30:00` (ISO 8601)
+  - `2023-06-15 14:30`
 
-- Relative date formats:
-  - `Now` (current date and time)
-  - `Today` (defaults to noon today)
-  - `Today at HH:MM:SS` (e.g., `Today at 14:30:00`)
-  - `Today at HH:MM` (e.g., `Today at 14:30`)
-  - `Today HH` (e.g., `Today 14`)
-  - `Yesterday` (defaults to noon yesterday)
-  - `Yesterday at HH:MM:SS` (e.g., `Yesterday at 14:30:00`)
-  - `Yesterday at HH:MM` (e.g., `Yesterday at 14:30`)
-  - `Yesterday HH` (e.g., `Yesterday 14`)
+- **With 'at'**:
+  - `2025-03-22 at 12:00:00`
+  - `2025-03-22 at 12:00`
+  - `2025-03-22 at 12`
 
-- Weekday formats:
-  - `Monday/Tuesday/etc.` (defaults to noon on the most recent occurrence of that day)
-  - `Monday/Tuesday/etc. at HH:MM:SS` (e.g., `Monday at 14:30:00`)
-  - `Monday/Tuesday/etc. at HH:MM` (e.g., `Monday at 14:30`)
+- **Relative day**:
+  - `now` (current date and time)
+  - `today` (defaults to noon today)
+  - `today at 14:30`
+  - `yesterday` (defaults to noon yesterday)
+  - `yesterday at 14:30`
 
-- Time-only formats (defaults to today):
-  - `HH` (e.g., `14`, interpreted as today at 14:00:00)
-  - `at HH` (e.g., `at 14`, interpreted as today at 14:00:00)
+- **Weekday**:
+  - `monday` (defaults to noon on the most recent Monday)
+  - `monday at 14:30`
+
+- **Time-only** (defaults to today):
+  - `14` (interpreted as today at 14:00:00)
 
 All formats are automatically normalized to the standard `YYYY-MM-DD HH:MM:SS` format.
 
@@ -122,11 +121,3 @@ The tool supports three environments:
 - **dev**: For development/local environment
 
 Each environment uses different authentication endpoints and API URLs. When using the interactive mode, you'll be prompted to select an environment. For command-line usage, you can specify the environment with the `-e` or `--env` flag.
-
-### Regions
-
-Regions are data centers where your Scalingo applications are hosted. The tool automatically fetches available regions from the Scalingo API based on your selected environment:
-
-- Common production regions: `osc-fr1` (Paris - Outscale), `osc-secnum-fr1` (Paris - SecNumCloud)
-- If no region is specified, the tool will use the first available region for your environment
-

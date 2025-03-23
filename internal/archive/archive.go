@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"sort"
 	"time"
 
@@ -14,6 +13,69 @@ import (
 	"github.com/briceamen/scalilogs/internal/status"
 	"github.com/briceamen/scalilogs/pkg/scalingo"
 )
+
+// FetchLogsArchives returns a list of log archives for the specified app
+// This is exported as a variable so it can be mocked in tests
+var FetchLogsArchives = fetchLogsArchives
+
+// fetchLogsArchives is the actual implementation
+func fetchLogsArchives(ctx context.Context, statusCh chan<- status.Message, client *scalingo.Client, appName string) (*scalingo.LogsArchivesResponse, error) {
+
+	// Get first page without cursor
+	archivesList, err := client.Scalingo.LogsArchivesByCursor(ctx, appName, "")
+	if err != nil {
+		return nil, errors.Wrap(ctx, err, "get logs archives list (first page)")
+	}
+
+	// Store all archives
+	archives := archivesList.Archives
+	pageCount := 1
+
+	// Fetch ALL available pages using cursor-based pagination to ensure we have the complete history
+	// Continue until HasMore is false or we've fetched an unreasonable number of pages
+	maxPagesFetch := 1000 // Very high limit to ensure we exhaust all available archives
+
+	for archivesList.HasMore && pageCount < maxPagesFetch {
+		// Use the next_cursor value to get the next page
+		nextArchivesList, err := client.Scalingo.LogsArchivesByCursor(ctx, appName, archivesList.NextCursor)
+		if err != nil {
+			// Log the error but continue with what we have
+			fmt.Printf("WARNING: Failed to fetch logs archives page with cursor %s: %v\n",
+				archivesList.NextCursor, err)
+			break
+		}
+
+		// Append archives from this page
+		archives = append(archives, nextArchivesList.Archives...)
+
+		// Update for next iteration
+		archivesList.HasMore = nextArchivesList.HasMore
+		archivesList.NextCursor = nextArchivesList.NextCursor
+		pageCount++
+
+		// Status update for user during long fetches
+		if pageCount%5 == 0 {
+			// Send consistent progress info format
+			status.Update(statusCh, fmt.Sprintf("Fetching archives, found %d so far", len(archives)))
+		}
+	}
+
+	// Report whether we successfully retrieved all archives or hit the page limit through status channel
+	if !archivesList.HasMore {
+		// We successfully retrieved all available archives
+		status.Update(statusCh, fmt.Sprintf("Retrieved all archives (%d)", len(archives)))
+	} else if pageCount >= maxPagesFetch {
+		// We hit the page limit, which shouldn't happen in practice
+		status.Update(statusCh, fmt.Sprintf("WARNING: Hit page limit (%d)", maxPagesFetch))
+	}
+
+	// Create a new response with all archives
+	return &scalingo.LogsArchivesResponse{
+		Archives:   archives,
+		NextCursor: archivesList.NextCursor,
+		HasMore:    archivesList.HasMore, // Preserve original HasMore value
+	}, nil
+}
 
 // FetchArchived fetches archived logs for the specified app
 func FetchArchived(ctx context.Context, client *scalingo.Client, appName, outputDir, mainOutputFile string, targetTime time.Time, statusCh chan<- status.Message, hoursCount int, lineCount int) (int, map[string]int, error) {
@@ -23,10 +85,13 @@ func FetchArchived(ctx context.Context, client *scalingo.Client, appName, output
 	archiveDetails := make(map[string]int)
 
 	// Get list of archives
-	archivesResp, err := scalingo.FetchLogsArchives(ctx, client, appName)
+	archivesResp, err := FetchLogsArchives(ctx, statusCh, client, appName)
 	if err != nil {
 		return 0, nil, errors.Wrap(ctx, err, "get logs archives list")
 	}
+
+	// Give feedback on the number of archives found
+	status.Update(statusCh, fmt.Sprintf("found %d log archives, analyzing timestamps...", len(archivesResp.Archives)))
 
 	// Check if there are no archives available
 	if len(archivesResp.Archives) == 0 {
@@ -69,10 +134,21 @@ func FetchArchived(ctx context.Context, client *scalingo.Client, appName, output
 	var relevantArchives []ProcessedArchive
 
 	if !targetTime.IsZero() {
-		// Sort archives by time (newest first)
-		sort.Slice(processedArchives, func(i, j int) bool {
-			return processedArchives[i].ToTime.After(processedArchives[j].ToTime)
-		})
+		// Sort archives by time (newest first by default)
+		if targetTime.Year() < time.Now().Year()-1 {
+			// For very old timestamps (more than a year ago), sort oldest first
+			// This improves search performance for historical logs
+			sort.Slice(processedArchives, func(i, j int) bool {
+				return processedArchives[i].FromTime.Before(processedArchives[j].FromTime)
+			})
+			status.Update(statusCh, fmt.Sprintf("searching for older timestamp (%s), prioritizing older archives first...",
+				targetTime.Format("2006-01-02 15:04:05")))
+		} else {
+			// For recent timestamps, sort newest first (default behavior)
+			sort.Slice(processedArchives, func(i, j int) bool {
+				return processedArchives[i].ToTime.After(processedArchives[j].ToTime)
+			})
+		}
 
 		// Try to find archives that contain or overlap with the target time
 		// If target time is within an archive's range, include it
@@ -279,20 +355,10 @@ func FetchArchived(ctx context.Context, client *scalingo.Client, appName, output
 	// Download and process each relevant archive
 	for i, archive := range relevantArchives {
 		archiveUrl := archive.ArchiveItem.URL
-
-		// Create a temporary file for this archive
-		archiveFile := fmt.Sprintf("%s/%s-archive-%d.log", outputDir, appName, i)
-
-		// Status message for downloading
-		statusMsg := fmt.Sprintf("downloading archive %d/%d (%s - %s)",
-			i+1, len(relevantArchives),
-			archive.FromTime.Format("2006-01-02 15:04 MST"),
-			archive.ToTime.Format("2006-01-02 15:04 MST"))
-		status.Update(statusCh, statusMsg)
-
-		// Download the archive
-		if err := downloadArchive(ctx, client, archiveUrl, archiveFile); err != nil {
-			return totalLines, archiveDetails, errors.Wrap(ctx, err, "download archive")
+		// Download the archive with progress UI
+		archiveFile, err := CreateDecompressedArchive(ctx, client, archiveUrl, appName, outputDir, i)
+		if err != nil {
+			return totalLines, archiveDetails, errors.Wrap(ctx, err, "download and decompress archive")
 		}
 
 		// Count lines in this archive
@@ -311,7 +377,7 @@ func FetchArchived(ctx context.Context, client *scalingo.Client, appName, output
 		archiveDetails[archiveTimeKey] = archiveLineCount
 
 		// Processing message
-		processingMsg := fmt.Sprintf("processing archive %d/%dr %s",
+		processingMsg := fmt.Sprintf("processing archive %d/%d %s",
 			i+1, len(relevantArchives), appName)
 		status.Update(statusCh, processingMsg)
 
@@ -325,46 +391,6 @@ func FetchArchived(ctx context.Context, client *scalingo.Client, appName, output
 	}
 
 	return totalLines, archiveDetails, nil
-}
-
-// Download and extract an archive using the Scalingo client
-func downloadArchive(ctx context.Context, client *scalingo.Client, url, outputFile string) error {
-	// Create temp file for compressed data
-	tempGzFile := outputFile + ".gz"
-	outTempFile, err := os.Create(tempGzFile)
-	if err != nil {
-		return errors.Wrap(ctx, err, "create temp gzip file")
-	}
-	defer func() {
-		outTempFile.Close()
-		os.Remove(tempGzFile) // Clean up temp file
-	}()
-
-	// Download archive using the Scalingo client (to temp file)
-	if err := scalingo.DownloadLogsArchive(ctx, client, url, outTempFile); err != nil {
-		return errors.Wrap(ctx, err, "download archive")
-	}
-
-	// Close the temp file so we can reopen it for reading
-	outTempFile.Close()
-
-	// Create the output file
-	outputFileHandle, err := os.Create(outputFile)
-	if err != nil {
-		return errors.Wrap(ctx, err, "create output file")
-	}
-	defer outputFileHandle.Close()
-
-	// Use zcat to decompress the gzip file
-	cmd := exec.Command("zcat", tempGzFile)
-	cmd.Stdout = outputFileHandle
-
-	// Run the command
-	if err := cmd.Run(); err != nil {
-		return errors.Wrap(ctx, err, "decompress archive")
-	}
-
-	return nil
 }
 
 // appendFiles appends the contents of sourceFile to destFile

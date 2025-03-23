@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/briceamen/scalilogs/internal/config"
 	"github.com/briceamen/scalilogs/internal/logs"
 	"github.com/briceamen/scalilogs/internal/status"
 	"github.com/briceamen/scalilogs/internal/tui"
@@ -13,11 +14,64 @@ import (
 	"github.com/briceamen/scalilogs/pkg/scalingo"
 )
 
+// AppConfig holds the application configuration including preloaded regions
+type AppConfig struct {
+	Regions map[string][]config.Region // Maps environment to regions list
+}
+
+// NewAppConfig creates and initializes a new application configuration
+func NewAppConfig(ctx context.Context, statusCh chan<- status.Message) (*AppConfig, error) {
+	// Initialize the config struct
+	appConfig := &AppConfig{
+		Regions: make(map[string][]config.Region),
+	}
+
+	// Load regions for each environment
+	environments := []string{
+		scalingo.EnvProduction,
+		scalingo.EnvStaging,
+		scalingo.EnvDev,
+	}
+
+	for _, env := range environments {
+		regions, err := config.LoadRegionsFromCache(ctx, env, "")
+		if err != nil {
+			// Send a warning message to the status channel
+			status.Update(statusCh, "Warning: Could not load regions for "+env+" environment: "+err.Error())
+
+			if env == scalingo.EnvStaging || env == scalingo.EnvDev {
+				status.Update(statusCh, "Please check that ~/.cache/scalingo/regions_staging.json or ~/.cache/scalingo/regions_local.json exists and is not expired.")
+			}
+
+			// Initialize with empty slice to prevent nil map issues
+			appConfig.Regions[env] = []config.Region{}
+			continue
+		}
+		appConfig.Regions[env] = regions
+	}
+
+	return appConfig, nil
+}
+
 func main() {
-	// Create a root context for the entire application
 	ctx := context.Background()
+
 	// Create a channel to send status messages to the UI
 	statusCh := make(chan status.Message)
+
+	// Start a goroutine to read from the status channel to prevent blocking
+	go func() {
+		for msg := range statusCh {
+			fmt.Println(msg.Status)
+		}
+	}()
+
+	// Initialize application configuration with preloaded regions
+	appConfig, err := NewAppConfig(ctx, statusCh)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error initializing application: %v\n", err)
+		os.Exit(1)
+	}
 
 	// Define command-line flags
 	var appNameFlag string
@@ -74,8 +128,7 @@ func main() {
 	var hours int
 	var env string
 	var region string
-	var err error
-	var client *scalingo.ScalingoClient
+	var client *scalingo.Client
 
 	if useFlags {
 		// Use command-line flags
@@ -98,8 +151,8 @@ func main() {
 			lineCount = 1000
 		}
 
-		// Create the client with specified parameters
-		client, err = scalingo.NewScalingoClient(ctx, env, region, statusCh)
+		// Create the client with specified parameters and preloaded regions
+		client, err = scalingo.NewScalingoClientWithRegions(ctx, env, region, statusCh, appConfig.Regions)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error initializing Scalingo client: %v\n", err)
 			os.Exit(1)
@@ -117,15 +170,15 @@ func main() {
 		}
 	} else {
 		// Interactive mode with survey
-		// First run the survey without a client to get environment/region
-		appName, env, region, err = ui.RunSurveyFirstPart(ctx)
+		// First run the survey without a client to get environment/region, using preloaded regions
+		appName, env, region, err = ui.RunSurveyFirstPart(ctx, appConfig.Regions)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
 
 		// Now create the client with the selected environment and region
-		client, err = scalingo.NewScalingoClient(ctx, env, region, statusCh)
+		client, err = scalingo.NewScalingoClientWithRegions(ctx, env, region, statusCh, appConfig.Regions)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error initializing Scalingo client: %v\n", err)
 			os.Exit(1)
@@ -142,11 +195,15 @@ func main() {
 	// Use the client to extract logs
 	outputFilePath, err := logs.ExtractLogs(ctx, client, appName, timestamp, lineCount, hours)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Print success message with file path
-	fmt.Println(tui.SuccessStyle.Render("✓ Extraction complete!"))
-	fmt.Printf("Logs saved to: %s\n", outputFilePath)
+	// Print success message with file path only if we have a valid output path
+	if outputFilePath != "" {
+		fmt.Println(tui.SuccessStyle.Render("✓ Extraction complete!"))
+		fmt.Printf("Logs saved to: %s\n", outputFilePath)
+	} else {
+		fmt.Fprintf(os.Stderr, "Error: Extraction appeared to complete but no output file was generated\n")
+		os.Exit(1)
+	}
 }
